@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Calibration data (generated per camera setup)
+calib_samples/
+camera_calib.xml
+
+# MindVision SDK runtime data
+Camera/
+
+# Claude Code internal
+.claude/
+
+# Unrelated files
+myplanes.txt
+myplanes.txt~

@@ -1,0 +1,14 @@
+calibration:
+  board_size:
+  - 11
+  - 8
+  square_size: 5.0
+camera:
+  ae_enabled: false
+  analog_gain: 1
+  contrast: 98
+  exposure_us: 24579
+  gamma: 171
+  reverse_x: false
+  reverse_y: false
+rectify_enabled: true
