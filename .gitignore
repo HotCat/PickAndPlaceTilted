@@ -10,9 +10,14 @@ camera_calib.xml
 # MindVision SDK runtime data
 Camera/
 
+# Hikvision MVS diagnostic output (generated on SDK initialization)
+MvSdkLog/
+
 # Claude Code internal
 .claude/
 
 # Unrelated files
 myplanes.txt
 myplanes.txt~
+\#myplanes.txt#
+.#myplanes.txt
