@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run Ubuntu input diagnostics from the project-local unpacked packages.
+set -eu
+fr3_tools_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.tools/linux-joystick/root" && pwd)
+fr3_tool=${1:-jstest-gtk}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$fr3_tool" in
+  jstest-gtk)
+    export LD_LIBRARY_PATH="$fr3_tools_root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    exec "$fr3_tools_root/usr/libexec/jstest-gtk" --datadir "$fr3_tools_root/usr/share/jstest-gtk" "$@"
+    ;;
+  jstest|jscal|evtest|evdev-joystick)
+    exec "$fr3_tools_root/usr/bin/$fr3_tool" "$@"
+    ;;
+  *) echo 'Usage: tools/joystick-tools [jstest-gtk|jstest|jscal|evtest|evdev-joystick] [arguments]' >&2; exit 2 ;;
+esac

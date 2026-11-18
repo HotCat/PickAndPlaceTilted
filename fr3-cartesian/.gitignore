@@ -1,0 +1,21 @@
+.venv/
+.venv-conda-backup/
+__pycache__/
+.pytest_cache/
+*.pyc
+vendor/
+calibrations/
+calibration-session.json
+*.egg-info/
+.tools/
+
+# Per-cell measurements and per-host input settings are never source fixtures.
+calibration.json
+joystick-profile.json
+diagnostics/
+# Editor recovery files, local notes, and build outputs.
+*~
+.#*
+myplans.txt
+build/
+dist/
