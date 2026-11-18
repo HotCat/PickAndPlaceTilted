@@ -456,3 +456,74 @@ def test_base_jog_uses_its_own_speed_and_matching_release_stop(tmp_path,monkeypa
         assert calls[-1]==('stop_jog',dict(stop_ref=1))
     finally:
         window.connected=False;window.close();app.processEvents()
+
+
+@pytest.mark.parametrize('hold', [False, True])
+@pytest.mark.parametrize('release', ['button', 'redirected', 'focus', 'disarm'])
+def test_plane_arrow_release_interrupts_current_step_and_keeps_connection(tmp_path, hold, release):
+    from fr3_cartesian.geometry import calibrate_pivot
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'plane-release.ini'), QSettings.IniFormat))
+    window.mode.setCurrentIndex(0)
+    window.show()
+    try:
+        # Prepare a valid synthetic tilted plane and tool, then exercise actual
+        # Qt mouse events, pipe cancellation and the simulator worker process.
+        sim = Session()
+        window.tool_samples = [sim.demo_pose('pivot', i)['flange'] for i in range(4)]
+        window.tool_result = asdict(calibrate_pivot(window.tool_samples))
+        window.source = 'simulation'
+        window.planes = [Plane.teach('tilted', [[300, 0, 200], [400, 20, 200], [280, 100, 210]])]
+        window.sync_planes()
+        window.connect_robot()
+        wait_until(app, lambda: window.connected and window.client.pending is None)
+        window.timer.stop()
+        window.apply_tool()
+        wait_until(app, lambda: window.tool_applied and window.client.pending is None)
+        window.tabs.setCurrentIndex(2)
+        window.capture('orientation')
+        wait_until(app, lambda: window.orientation is not None and window.client.pending is None)
+        window.step.setValue(10)
+        window.speed.setValue(.5)
+        window.hold.setChecked(hold)
+        window.axes_verified.setChecked(True)
+        window.arm.setChecked(True)
+        before = np.array(window.state['tcp'][:3])
+        button = window.arrows[2]  # +X of the tilted plane
+        QTest.mousePress(button, Qt.LeftButton)
+        QTest.qWait(160)
+        assert window.plane_arrow_held and button.isEnabled()
+        assert window.client.busy
+        if release == 'button':
+            QTest.mouseRelease(button, Qt.LeftButton)
+        elif release == 'redirected':
+            QTest.mouseRelease(window.status, Qt.LeftButton)
+        elif release == 'focus':
+            app.sendEvent(window, QEvent(QEvent.WindowDeactivate))
+        else:
+            window.arm.setChecked(False)
+        assert not window.plane_arrow_held and not button.isDown()
+        assert window.repeat_direction is None and not window.plane_repeat_timer.isActive()
+        wait_until(app, lambda: window.client.pending is None)
+        stopped = np.array(window.state['tcp'][:3])
+        assert 0 < np.linalg.norm(stopped-before) < (1 if hold else 10)
+        assert window.state['stopped'] and window.connected and window.tool_applied
+        assert window.state['tcp'][3:] == pytest.approx(window.orientation)
+        delta = window.current_plane().from_base(stopped)-np.array(window.current_plane().from_base(before))
+        assert delta[0] > 0 and delta[1:] == pytest.approx([0, 0], abs=1e-8)
+        QTest.qWait(150)
+        app.processEvents()
+        assert window.client.pending is None  # No delayed repeat after release.
+        np.testing.assert_allclose(window.state['tcp'][:3], stopped)
+        # Another stroke needs no reconnect or TCP reapplication.
+        window.arm.setChecked(True)
+        QTest.mousePress(button, Qt.LeftButton)
+        QTest.qWait(100)
+        QTest.mouseRelease(button, Qt.LeftButton)
+        wait_until(app, lambda: window.client.pending is None)
+        assert window.connected and window.tool_applied
+        assert np.linalg.norm(np.array(window.state['tcp'][:3])-stopped) > 0
+    finally:
+        window.close()
+        app.processEvents()

@@ -1,5 +1,6 @@
 """Isolated SDK owner. Stdout is a JSON protocol; vendor prints go to stderr."""
 import contextlib
+from collections import deque
 import ipaddress
 import json
 import os
@@ -28,6 +29,48 @@ class NoRetryTransport(xmlrpc.client.Transport):
             return self.single_request(host, handler, request_body, verbose)
         except OSError as exc:
             raise OperatorError("Controller communication failed: {detail}", detail=str(exc)) from exc
+
+
+class CommandInput:
+    """Read stdin during a plane move without concurrent SDK access.
+
+    Normal commands remain queued for the main dispatcher. Only cancellation
+    matching the active arrow token can interrupt that move; EOF also releases
+    it. A late cancellation can never affect another stroke or an absolute move.
+    """
+    def __init__(self, fd):
+        self.fd = fd
+        self.buffer = b''
+        self.requests = deque()
+        self.closed = False
+
+    def poll(self, timeout):
+        if self.closed:
+            return
+        readable, _, _ = select.select([self.fd], [], [], timeout)
+        if readable:
+            chunk = os.read(self.fd, 65536)
+            if not chunk:
+                self.closed = True
+            self.buffer += chunk
+            if len(self.buffer) > 131072 or len(self.requests) > 1024:
+                raise OperatorError('Controller command input backlog exceeded its limit')
+            while b'\n' in self.buffer:
+                line, self.buffer = self.buffer.split(b'\n', 1)
+                self.requests.append(json.loads(line))
+
+    def cancelled(self, token):
+        self.poll(0)
+        cancelled = self.closed
+        pending = deque()
+        while self.requests:
+            request = self.requests.popleft()
+            if request['method'] == 'cancel_move':
+                cancelled |= request.get('token') == token
+            else:
+                pending.append(request)
+        self.requests = pending
+        return cancelled
 
 
 def proxy(ip):
@@ -65,6 +108,7 @@ class Session:
         self.workpiece_pose = [0.] * 6
         self.servo = None
         self.event_sink = None
+        self.move_cancelled = lambda token: False
 
     def advance_sim_jog(self):
         jog = self.sim_jog
@@ -476,7 +520,7 @@ class Session:
             check(self.robot.StopJOG(stop_ref), "StopJOG")
         return self.read()
 
-    def move(self, plane, target, orientation, bounds, speed):
+    def move(self, plane, target, orientation, bounds, speed, jog_token=None):
         state = self.ready(motion=True)
         if plane.get('reference') != 'robot_base':
             raise MoveRejected("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")
@@ -501,29 +545,73 @@ class Session:
             pose = checked_target(frame, state['tcp'], target, orientation, bounds)
         except OperatorValueError as exc:
             raise MoveRejected(exc.message.source, **exc.message.values) from exc
+        if jog_token is not None and self.move_cancelled(jog_token):
+            # Preflight may include several RPC reads. Check release again at
+            # the dispatch boundary, before any motion can reach the controller.
+            return dict(self.read(), plane_jog_stopped=True)
         if self.sim:
-            self.flange = [*(np.array(pose[:3])-rotation(pose[3:]) @ np.array(self.tool[:3])), *pose[3:]]
-            time.sleep(0.12)
+            if jog_token is None:
+                self.flange = [*(np.array(pose[:3])-rotation(pose[3:]) @ np.array(self.tool[:3])), *pose[3:]]
+                time.sleep(0.12)
+            else:
+                # Advance progressively so release tests can observe a partial
+                # move, rather than teleporting to the target before sleeping.
+                origin = np.array(state['tcp'][:3])
+                delta = np.array(pose[:3])-origin
+                duration = max(.12, np.linalg.norm(delta)/(250.*speed/100.))
+                started = time.monotonic()
+                while True:
+                    fraction = min(1., (time.monotonic()-started)/duration)
+                    tip = origin + fraction*delta
+                    self.flange = [*(tip-rotation(pose[3:]) @ np.array(self.tool[:3])), *pose[3:]]
+                    if self.move_cancelled(jog_token):
+                        return dict(self.read(), plane_jog_stopped=True)
+                    if fraction >= 1:
+                        break
+                    time.sleep(.01)
         else:
+            jog_options = {}
+            if jog_token is not None:
+                # The SDK normally performs IK inside MoveL. Resolve it here
+                # so a release arriving during that RPC is checked before the
+                # motion write, instead of starting an already-released stroke.
+                joints = vector(check(self.robot.GetInverseKin(0, pose), 'GetInverseKin'), 6).tolist()
+                if self.move_cancelled(jog_token):
+                    return dict(self.read(), plane_jog_stopped=True)
+                jog_options['joint_pos'] = joints
             # The target and IK type 0 use robot base coordinates. MoveL's user=0
             # must agree with the controller's selected base workpiece.
             # blendR=0 returns after accepting the move. Do not submit
             # another point until live feedback confirms the target and stationary state.
             result = self.robot.MoveL(pose, tool=self.slot, user=0, vel=speed, ovl=100,
-                                      blendR=0, offset_flag=0)
+                                      blendR=0, offset_flag=0, **jog_options)
             code = result[0] if isinstance(result, (list, tuple)) else result
             if code == 74:
                 print(f"MoveL point rejection: target_base={pose}; tool={self.slot}; user=0", file=sys.stderr)
                 raise OperatorError("MoveL: FAIRINO error 74 — linear target point error (including tool mismatch). Check the target, selected tool and base workpiece 0. Review and reset the controller fault in WebUI before trying again.")
             check(result, "MoveL")
             deadline = time.monotonic()+15
+            cancelled = False
             while time.monotonic() < deadline:
+                if jog_token is not None and not cancelled and self.move_cancelled(jog_token):
+                    # Normal arrow release uses StopMotion and retains this
+                    # calibrated session only after fresh stationary feedback.
+                    # A failed stop/read takes the existing stop/disconnect path.
+                    check(self.robot.StopMotion(), 'StopMotion')
+                    cancelled = True
+                    deadline = min(deadline, time.monotonic()+1.5)
                 feedback = self.read()
                 if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
                     raise OperatorError('Controller stopped or faulted during motion')
-                if feedback['stopped'] and np.linalg.norm(np.array(feedback['tcp'][:3])-pose[:3]) < 0.02:
-                    return feedback
+                if feedback['stopped']:
+                    if cancelled:
+                        if feedback['program_stopped']:
+                            return dict(feedback, plane_jog_stopped=True)
+                    elif np.linalg.norm(np.array(feedback['tcp'][:3])-pose[:3]) < 0.02:
+                        return feedback
                 time.sleep(0.03)
+            if cancelled:
+                raise OperatorError('Plane jog stop was not confirmed by stationary feedback')
             raise OperatorError('Motion did not reach the target within 15 seconds')
         return self.read()
 
@@ -564,7 +652,8 @@ def main():
         return
     session = Session()
     allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'demo_pose', 'servo_start', 'servo_end'}
-    buffer = b''
+    inbox = CommandInput(sys.stdin.fileno())
+    session.move_cancelled = inbox.cancelled
     next_tick, next_state = 0., 0.
     protocol_output = sys.stdout
 
@@ -585,17 +674,12 @@ def main():
     try:
         while True:
             timeout = max(0., next_tick-time.monotonic()) if session.servo else None
-            readable, _, _ = select.select([sys.stdin.fileno()], [], [], timeout)
-            if readable:
-                chunk = os.read(sys.stdin.fileno(), 65536)
-                if not chunk:
-                    break
-                buffer += chunk
-                if len(buffer) > 131072:
-                    raise OperatorError('Joystick command input backlog exceeded its limit')
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
-                    request = json.loads(line)
+            inbox.poll(0 if inbox.requests else timeout)
+            if inbox.requests:
+                while inbox.requests:
+                    request = inbox.requests.popleft()
+                    if request['method'] == 'cancel_move':
+                        continue  # An already-completed stroke needs no stop.
                     if request['method'] == 'servo_update':
                         try:
                             session.servo_update(**request.get('args', {}))
@@ -617,6 +701,8 @@ def main():
                         if session.servo:
                             fail_stream(exc)
                         reply(dict(id=request['id'], error=error_message(exc).payload(), recoverable=isinstance(exc, MoveRejected)))
+            if inbox.closed:
+                break
             now = time.monotonic()
             if session.servo and now >= next_tick:
                 try:

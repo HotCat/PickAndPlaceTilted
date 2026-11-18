@@ -409,5 +409,10 @@
   "Tracking lag {error:.3f} mm · trajectory speed {scale:.0f}% of stick request": "跟随滞后 {error:.3f} mm · 轨迹速度为摇杆请求的 {scale:.0f}%",
   "Joystick speed ceilings: joint/rotation/plane {native:.1f}%, Base XYZ {tcp:.1f} mm/s before throttle.": "摇杆速度上限：关节/旋转/平面 {native:.1f}%，基坐标 XYZ {tcp:.1f} mm/s（油门缩放前）。",
   "Servo TCP made less than 0.05 mm progress for {elapsed:.2f} s while motion was requested; tracking error {error:.3f} mm. Velocity motion stopped": "请求运动时，伺服 TCP 在 {elapsed:.2f} s 内位移不足 0.05 mm；跟随误差 {error:.3f} mm。速度运动已停止",
-  "Servo TCP following error {error:.3f} mm exceeds 1 mm after {writes} absolute ServoCart writes; actual XYZ [{actual}], target XYZ [{target}], delta XYZ [{delta}], feedback age {age:.1f} ms, last RPC {rpc:.1f} ms, commanded speed {speed:.2f} mm/s, travel {distance:.2f}/{limit:.2f} mm. Velocity motion stopped": "伺服 TCP 跟随误差 {error:.3f} mm 超过 1 mm（已发送 {writes} 条绝对位置 ServoCart）；实际 XYZ [{actual}]，目标 XYZ [{target}]，差值 XYZ [{delta}]，反馈包龄 {age:.1f} ms，上次 RPC 耗时 {rpc:.1f} ms，指令速度 {speed:.2f} mm/s，行程 {distance:.2f}/{limit:.2f} mm。速度运动已停止"
+  "Servo TCP following error {error:.3f} mm exceeds 1 mm after {writes} absolute ServoCart writes; actual XYZ [{actual}], target XYZ [{target}], delta XYZ [{delta}], feedback age {age:.1f} ms, last RPC {rpc:.1f} ms, commanded speed {speed:.2f} mm/s, travel {distance:.2f}/{limit:.2f} mm. Velocity motion stopped": "伺服 TCP 跟随误差 {error:.3f} mm 超过 1 mm（已发送 {writes} 条绝对位置 ServoCart）；实际 XYZ [{actual}]，目标 XYZ [{target}]，差值 XYZ [{delta}]，反馈包龄 {age:.1f} ms，上次 RPC 耗时 {rpc:.1f} ms，指令速度 {speed:.2f} mm/s，行程 {distance:.2f}/{limit:.2f} mm。速度运动已停止",
+  "Hold an arrow to move up to the step limit. Release to request an immediate stop, including during the current step. Hold mode repeats 1 mm steps only while pressed. Each move preserves the locked orientation.": "按住方向键运动，最多达到设定步长。松开即请求停止，包括正在执行的当前步。连续模式仅在按住时重复 1 mm 步进；每次运动均保持已锁定的工具姿态。",
+  "Plane jog stopped on release": "松开方向键，平面点动已停止",
+  "Plane jog stop timed out. Motion disabled; reconnect required.": "平面点动停止超时。运动已禁用，需要重新连接。",
+  "Plane jog stop was not confirmed by stationary feedback": "未收到静止反馈，平面点动停止未确认",
+  "Controller command input backlog exceeded its limit": "控制器输入指令积压超出限制"
 }

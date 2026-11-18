@@ -80,6 +80,11 @@ class MainWindow(QMainWindow):
         self.capture_kind = None
         self.demo_pending = None
         self.repeat_direction = None
+        self.plane_arrow_held = False
+        self.plane_arrow_button = None
+        self.plane_repeat_timer = QTimer(self)
+        self.plane_repeat_timer.setSingleShot(True)
+        self.plane_repeat_timer.timeout.connect(self.repeat_step)
         self.active_jog = None
         self.move_started = 0.
         self.last_plane_application = None
@@ -594,13 +599,13 @@ class MainWindow(QMainWindow):
             b = self.pushbutton(text)
             b.setMinimumHeight(50)
             b.setFocusPolicy(Qt.NoFocus)
-            b.pressed.connect(lambda a=axis, d=direction: self.arrow_pressed(a, d))
+            b.pressed.connect(lambda a=axis, d=direction, button=b: self.arrow_pressed(a, d, button))
             b.released.connect(self.arrow_released)
             pad.addWidget(b, r, c)
             self.arrows.append(b)
         pad.addWidget(self.label('XY plane'), 1, 1, alignment=Qt.AlignCenter)
         box.addLayout(pad)
-        box.addWidget(self.paragraph('Click for one linear step. Hold mode repeats one 1 mm move at a time; releasing finishes the current step (≤1 mm) and prevents the next. Each move preserves the locked orientation.'))
+        box.addWidget(self.paragraph('Hold an arrow to move up to the step limit. Release to request an immediate stop, including during the current step. Hold mode repeats 1 mm steps only while pressed. Each move preserves the locked orientation.'))
         row = QHBoxLayout()
         self.targets = [number(-2000, 2000, 0) for _ in range(3)]
         for name, target in zip('XYZ', self.targets):
@@ -650,7 +655,7 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def disarm(self, *_):
-        self.repeat_direction = None
+        self.arrow_released()
         self.arm.setChecked(False)
         self.refresh()
 
@@ -744,9 +749,9 @@ class MainWindow(QMainWindow):
             kind, self.demo_pending = self.demo_pending, None
             self.capture(kind)
         elif method == 'move':
-            self.log('Linear move completed')
-            if self.repeat_direction and self.arm.isChecked():
-                QTimer.singleShot(80, self.repeat_step)
+            self.log('Plane jog stopped on release' if state.get('plane_jog_stopped') else 'Linear move completed')
+            if self.plane_arrow_held and self.repeat_direction and self.arm.isChecked():
+                self.plane_repeat_timer.start(80)
         if not state['safe'] or any(state['errors']):
             self.stop(reason=Message('Controller stop/fault: safe={safe}, errors={errors}',
                                      dict(safe=state['safe'], errors=str(state['errors']))))
@@ -1123,6 +1128,8 @@ class MainWindow(QMainWindow):
         return None
 
     def arm_changed(self, checked):
+        if not checked:
+            self.arrow_released()
         if checked:
             missing = next((reason for ready, reason in (
                 (self.connected, 'Connect to the robot before enabling Cartesian motion.'),
@@ -1173,15 +1180,26 @@ class MainWindow(QMainWindow):
     def limits(self):
         return [[w.value() for w in pair] for pair in self.bounds]
 
-    def arrow_pressed(self, axis, direction):
+    def arrow_pressed(self, axis, direction, button=None):
+        if self.plane_arrow_held or not self.arm.isChecked() or self.client.busy:
+            return
+        self.plane_arrow_held = True
+        self.plane_arrow_button = button
         self.repeat_direction = (axis, direction) if self.hold.isChecked() else None
-        self.send_step(axis, direction)
+        if not self.send_step(axis, direction):
+            self.arrow_released()
 
     def arrow_released(self):
         self.repeat_direction = None
+        self.plane_arrow_held = False
+        self.plane_repeat_timer.stop()
+        if self.plane_arrow_button is not None:
+            self.plane_arrow_button.setDown(False)
+            self.plane_arrow_button = None
+        self.client.end_plane_jog()
 
     def repeat_step(self):
-        if self.repeat_direction and self.arm.isChecked():
+        if self.plane_arrow_held and self.repeat_direction and self.arm.isChecked():
             self.send_step(*self.repeat_direction)
 
     def send_step(self, axis, direction):
@@ -1189,12 +1207,13 @@ class MainWindow(QMainWindow):
         if plane and self.state:
             xyz = plane.from_base(self.state['tcp'][:3])
             xyz[axis] += direction * (1 if self.hold.isChecked() else self.step.value())
-            self.send_move(xyz)
+            return self.send_move(xyz, jog=self.plane_arrow_held)
+        return False
 
     def move_target(self):
         self.send_move([w.value() for w in self.targets])
 
-    def send_move(self, target, speed=None):
+    def send_move(self, target, speed=None, jog=False):
         if not self.arm.isChecked() or self.client.busy:
             return False
         try:
@@ -1202,8 +1221,9 @@ class MainWindow(QMainWindow):
                 raise OperatorValueError('Position is stale; wait for live feedback')
             plane = self.current_plane()
             checked_target(plane, self.state['tcp'], target, self.orientation, self.limits())
-            accepted = self.client.call('move', dict(plane=asdict(plane), target=target, orientation=self.orientation,
-                                         bounds=self.limits(), speed=self.speed.value() if speed is None else speed))
+            args = dict(plane=asdict(plane), target=target, orientation=self.orientation,
+                        bounds=self.limits(), speed=self.speed.value() if speed is None else speed)
+            accepted = self.client.start_plane_jog(args) if jog else self.client.call('move', args)
         except ValueError as exc:
             self.log(error_message(exc))
             self.disarm()
@@ -1368,6 +1388,8 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.WindowDeactivate and hasattr(self, 'arm'):
             if self.active_jog:
                 self.end_jog(self.active_jog[0] + 1)
+            elif self.plane_arrow_held or self.client.plane_jog_token is not None:
+                self.disarm()  # Release the arrow; keep the verified connection.
             elif ((self.client.pending and self.client.pending[1] == 'move') or self.repeat_direction):
                 self.stop(reason=Message('Application focus lost during a plane move'))
             elif self.arm.isChecked():
@@ -1375,6 +1397,9 @@ class MainWindow(QMainWindow):
         return super().event(event)
 
     def eventFilter(self, watched, event):
+        if (event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton
+                and self.plane_arrow_held and watched is not self.plane_arrow_button):
+            self.arrow_released()  # Release redirected by scrolling/reparenting.
         if (event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton
                 and self.active_jog and watched is not self.active_jog[1]):
             # Normally the button's own released signal stops the jog. This

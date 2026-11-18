@@ -28,6 +28,8 @@ class RobotClient(QObject):
         self.stream_state_at = 0.
         self.stream_stopping = False
         self.servo_may_be_active = False
+        self.plane_jog_token = None
+        self.plane_jog_cancel_at = None
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.watchdog)
@@ -83,6 +85,31 @@ class RobotClient(QObject):
         self.pending = (self.counter, method, time.monotonic())
         self.process.write((json.dumps(dict(id=self.counter, method=method, args=args or {}))+'\n').encode())
         return True
+
+    def start_plane_jog(self, args):
+        """Tag an arrow move so its release cannot cancel an absolute move."""
+        token = uuid.uuid4().hex
+        if not self.call('move', dict(args, jog_token=token)):
+            return False
+        self.plane_jog_token = token
+        self.plane_jog_cancel_at = None
+        return True
+
+    def end_plane_jog(self):
+        token = self.plane_jog_token
+        if token is None or self.plane_jog_cancel_at is not None:
+            return
+        if self.queued_command and self.queued_command[0] == 'move':
+            # No controller request has been dispatched. Removing it guarantees
+            # a quick click cannot start moving later, after a telemetry reply.
+            self.queued_command = None
+            self.plane_jog_token = None
+            return
+        if self.process is not None:
+            # Release must bypass the single-flight queue: the worker polls this
+            # token while waiting for MoveL to finish. Never queue behind MoveL.
+            self.process.write((json.dumps(dict(method='cancel_move', token=token))+'\n').encode())
+            self.plane_jog_cancel_at = time.monotonic()
 
     def start_velocity(self, travel, speed):
         token = uuid.uuid4().hex
@@ -144,6 +171,9 @@ class RobotClient(QObject):
                 if self.pending and response['id'] == self.pending[0]:
                     method = self.pending[1]
                     self.pending = None
+                    if method == 'move':
+                        self.plane_jog_token = None
+                        self.plane_jog_cancel_at = None
                     if method == 'servo_start':
                         self.stream_state_at = time.monotonic()
                     if method == 'servo_end' or method == 'servo_start' and 'error' in response:
@@ -179,6 +209,13 @@ class RobotClient(QObject):
             self.failed.emit(Message('SDK worker exited ({code})', {'code': code}))
 
     def watchdog(self):
+        if self.plane_jog_cancel_at is not None and time.monotonic()-self.plane_jog_cancel_at > 2:
+            # A blocked SDK call cannot consume release. Invalidate its owner
+            # before the independent stop, so it cannot dispatch late motion.
+            self.shutdown()
+            self.stop()
+            self.failed.emit(Message('Plane jog stop timed out. Motion disabled; reconnect required.'))
+            return
         stream_limit = 4. if self.stream_stopping else .5
         if self.stream_token is not None and self.pending is None and time.monotonic()-self.stream_state_at > stream_limit:
             self.shutdown()
@@ -221,6 +258,8 @@ class RobotClient(QObject):
         proc.deleteLater()
 
     def shutdown(self):
+        self.plane_jog_token = None
+        self.plane_jog_cancel_at = None
         self.stream_token = None
         self.stream_stopping = False
         self.pending = None

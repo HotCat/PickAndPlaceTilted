@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fr3_cartesian.geometry import Plane, calibrate_pivot, pose_to_base, rotation, rpy
 import numpy as np
-from fr3_cartesian.worker import Session, NoRetryTransport, stop_robot
+from fr3_cartesian.worker import CommandInput, Session, NoRetryTransport, stop_robot
 from fr3_cartesian.messages import MoveRejected, OperatorError
 
 
@@ -42,6 +42,48 @@ def test_simulated_calibration_to_plane_motion():
     result = s.move(asdict(p), target, [180,0,0], [[-200,200],[-200,200],[-.1,200]], 3)
     assert p.from_base(result['tcp'][:3]) == pytest.approx(target)
     assert result['tcp'][3:] == pytest.approx([180,0,0])
+
+
+def test_simulated_plane_arrow_release_stops_short_of_target_and_can_move_again():
+    s, p = calibrated_session()
+    before = np.array(s.read()['tcp'][:3])
+    origin = p.from_base(before)
+    started = time.monotonic()
+    s.move_cancelled = lambda token: time.monotonic()-started > .06
+    state = s.move(asdict(p), [origin[0]+10, origin[1], origin[2]], [180, 0, 0],
+                   [[-200, 200], [-200, 200], [-1, 200]], 3, jog_token='stroke')
+    assert state['plane_jog_stopped'] and state['stopped']
+    distance = np.linalg.norm(np.array(state['tcp'][:3])-before)
+    assert 0 < distance < 5
+    # An ordinary absolute move is independent of the released stroke's token.
+    target = p.from_base(state['tcp'][:3])
+    target[0] += 1
+    state = s.move(asdict(p), target, [180, 0, 0], [[-200, 200], [-200, 200], [-1, 200]], 3)
+    assert p.from_base(state['tcp'][:3]) == pytest.approx(target)
+
+
+def test_command_input_framing_token_isolation_and_eof_release():
+    import json
+    import os
+    read_fd, write_fd = os.pipe()
+    inbox = CommandInput(read_fd)
+    try:
+        normal = dict(id=2, method='read')
+        os.write(write_fd, (json.dumps(normal)+'\n'+json.dumps(dict(method='cancel_move', token='old'))+'\n').encode())
+        assert not inbox.cancelled('new')
+        assert list(inbox.requests) == [normal]
+        os.write(write_fd, b'{"method":"cancel_move",')
+        assert not inbox.cancelled('new')
+        os.write(write_fd, b'"token":"new"}\n')
+        assert inbox.cancelled('new')
+        assert list(inbox.requests) == [normal]
+        os.close(write_fd)
+        write_fd = None
+        assert inbox.cancelled('next')
+    finally:
+        os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
 
 
 def test_worker_rejects_motion_before_tool_and_out_of_range_jog():

@@ -24,7 +24,7 @@ def sdk():
     return module
 
 
-def wire_session(sdk, monkeypatch, failure=None):
+def wire_session(sdk, monkeypatch, failure=None, complete=True, stop_code=0):
     session = Session()
     session.sim = False
     session.slot = 1
@@ -60,8 +60,14 @@ def wire_session(sdk, monkeypatch, failure=None):
             if failure is not None:
                 raise failure
             # Model feedback arriving at the transmitted target.
-            state['tcp'] = params[0][6:12]
+            if complete:
+                state['tcp'] = params[0][6:12]
+            else:
+                state['stopped'] = False
             response = 0
+        elif method == 'StopMotion':
+            state['stopped'] = True
+            response = stop_code
         else:
             pytest.fail(f'Unexpected RPC: {method}')
         return xmlrpc.client.loads(xmlrpc.client.dumps((response,), methodresponse=True))[0]
@@ -116,6 +122,53 @@ def test_official_sdk_does_not_replay_failed_move(sdk, monkeypatch, failure, exp
     with pytest.raises(expected):
         session.move(asdict(plane), [4, 3, 2], [180, 0, 0], [[-100, 100]]*3, 3)
     assert sum(method == 'MoveL' for method, _ in calls) == 1
+
+
+@pytest.mark.parametrize('cancel_before_dispatch', [True, False])
+def test_plane_arrow_release_cancels_unsent_move_or_stops_once_on_wire(sdk, monkeypatch, cancel_before_dispatch):
+    session, plane, calls = wire_session(sdk, monkeypatch, complete=False)
+    session.move_cancelled = lambda token: cancel_before_dispatch or any(method == 'MoveL' for method, _ in calls)
+    result = session.move(asdict(plane), [4, 3, 2], [180, 0, 0], [[-100, 100]]*3, 3, jog_token='stroke')
+    assert result['plane_jog_stopped'] and result['stopped']
+    motions = [(method, args) for method, args in calls if method in ('MoveL', 'StopMotion')]
+    assert [method for method, _ in motions] == ([] if cancel_before_dispatch else ['MoveL', 'StopMotion'])
+    if motions:
+        assert motions[-1] == ('StopMotion', ())
+    assert session.robot is not None  # Normal release retains the SDK owner.
+
+
+def test_failed_plane_release_stop_is_an_uncertain_error_without_retry(sdk, monkeypatch):
+    session, plane, calls = wire_session(sdk, monkeypatch, complete=False, stop_code=112)
+    session.move_cancelled = lambda token: any(method == 'MoveL' for method, _ in calls)
+    with pytest.raises(OperatorError, match='StopMotion: FAIRINO error 112'):
+        session.move(asdict(plane), [4, 3, 2], [180, 0, 0], [[-100, 100]]*3, 3, jog_token='stroke')
+    assert [method for method, _ in calls].count('StopMotion') == 1
+
+
+def test_plane_release_during_inverse_kinematics_prevents_the_motion_write(sdk, monkeypatch):
+    session, plane, calls = wire_session(sdk, monkeypatch)
+    session.move_cancelled = lambda token: any(method == 'GetInverseKin' for method, _ in calls)
+    result = session.move(asdict(plane), [4, 3, 2], [180, 0, 0], [[-100, 100]]*3, 3, jog_token='stroke')
+    assert result['plane_jog_stopped']
+    assert [method for method, _ in calls] == ['GetTCPOffset', 'GetWObjOffset', 'GetInverseKin']
+
+
+def test_plane_release_waits_for_program_stopped_before_reusing_session(sdk, monkeypatch):
+    session, plane, calls = wire_session(sdk, monkeypatch, complete=False)
+    state = session.ready()
+    state['program_stopped'] = False
+    reads = []
+    def read():
+        reads.append(True)
+        if len(reads) >= 3:
+            state['program_stopped'] = True
+        return state
+    session.read = read
+    session.move_cancelled = lambda token: any(method == 'MoveL' for method, _ in calls)
+    result = session.move(asdict(plane), [4, 3, 2], [180, 0, 0], [[-100, 100]]*3, 3, jog_token='stroke')
+    assert len(reads) == 3 and result['stopped'] and result['program_stopped']
+    assert result['plane_jog_stopped']
+    assert [method for method, _ in calls].count('StopMotion') == 1
 
 
 def test_feedback_normalization_with_official_sdk_and_nonzero_wobj_wire_responses(sdk, monkeypatch):

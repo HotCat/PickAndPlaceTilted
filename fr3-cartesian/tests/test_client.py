@@ -241,3 +241,48 @@ def test_old_session_cannot_mark_the_new_stream_as_stopping():
     process.output=(json.dumps(dict(event='servo_stopping',token='old-session'))+'\n').encode()
     client.receive()
     assert not client.stream_stopping
+
+
+def test_plane_arrow_release_cancels_queued_move_before_dispatch():
+    app, client = bridge()
+    process = client.process
+    assert client.call('read')
+    assert client.start_plane_jog({'target': [1, 0, 0]})
+    assert client.plane_jog_token and client.queued_command[0] == 'move'
+    client.end_plane_jog()
+    assert client.queued_command is None and client.plane_jog_token is None
+    process.reply(process.sent[0], result={'stopped': True})
+    client.receive()
+    assert [command['method'] for command in process.sent] == ['read']
+
+
+def test_plane_release_bypasses_pending_move_once_and_absolute_move_is_unaffected():
+    app, client = bridge()
+    process = client.process
+    assert client.start_plane_jog({'target': [10, 0, 0]})
+    token = client.plane_jog_token
+    client.end_plane_jog()
+    client.end_plane_jog()
+    assert process.sent[1] == dict(method='cancel_move', token=token)
+    assert len(process.sent) == 2 and client.queued_command is None
+    assert client.busy and not client.call('move', {})
+    process.reply(process.sent[0], result={'stopped': True, 'plane_jog_stopped': True})
+    client.receive()
+    assert client.plane_jog_token is None and client.plane_jog_cancel_at is None
+    assert not client.busy
+    assert client.call('move', {'target': [0, 0, 0]})
+    client.end_plane_jog()
+    assert process.sent[-1]['method'] == 'move' and len(process.sent) == 3
+
+
+def test_plane_release_timeout_discards_owner_before_independent_stop(monkeypatch):
+    app, client = bridge()
+    events = []
+    assert client.start_plane_jog({})
+    client.end_plane_jog()
+    client.plane_jog_cancel_at = time.monotonic()-3
+    monkeypatch.setattr(client, 'shutdown', lambda: events.append('shutdown'))
+    monkeypatch.setattr(client, 'stop', lambda: events.append('stop'))
+    client.failed.connect(lambda message: events.append(message.source))
+    client.watchdog()
+    assert events == ['shutdown', 'stop', 'Plane jog stop timed out. Motion disabled; reconnect required.']

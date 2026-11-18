@@ -52,6 +52,25 @@ mean a disconnect; freshness checks determine whether motion is allowed. The SDK
 on it indefinitely. Permanent receive errors therefore use a separate application
 field so bounded stop attempts are still possible. See `test_feedback.py`.
 
+Plane arrows tag each `MoveL` with a unique stroke token. Release cancels a queued,
+unsent move locally or sends a `cancel_move` message outside the normal request
+queue. `CommandInput` polls for matching cancellation before dispatch and while
+waiting for motion completion; other commands stay queued and SDK calls remain
+serialized. The worker sends `StopMotion` once, waits for stationary and program-
+stopped feedback, and only then completes the request. Late tokens cannot stop a
+new stroke or an absolute target move. The repeat timer is owned and canceled on
+release; no delayed callback can restart a released stroke. The simulator advances
+these tagged moves progressively so tests can verify stopping short of the target.
+
+A release not acknowledged within two seconds discards the SDK owner and uses the
+independent stop channel. This bounds a blocked SDK/read call; it does not promise
+a physical stop within that interval. Normal confirmed release keeps TCP/plane
+verification and the connection; focus loss also disarms Cartesian controls.
+
+平面方向键的每次步进使用唯一标识。松开时取消未发送的步进，或直接发送停止请求，
+不能排在正在执行的 MoveL 后面。后台串行调用 StopMotion，并确认机器人和程序停止；
+旧标识不能影响新的步进或绝对定位。停止超时走独立停止通道并断开，正常确认后保留连接。
+
 STOP/Esc and uncertain motion failures use the independent stop channel. Focus loss
 during a held native jog sends its normal release stop. Focus loss while idle
 disarms Cartesian controls without closing the connection. These are software
