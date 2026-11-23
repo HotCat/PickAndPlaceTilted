@@ -659,6 +659,8 @@ class MainWindow(QMainWindow):
         for index, (name, widget) in enumerate(zip(('X', 'Y', 'Z', 'RX', 'RY', 'RZ'), self.task_destination)):
             destination_grid.addWidget(self.label(name), index//3, (index%3)*2)
             destination_grid.addWidget(widget, index//3, (index%3)*2+1)
+        self.task_destination_capture = self.button('Capture current TCP as fixed destination', self.capture_task_destination, destination_grid)
+        destination_grid.addWidget(self.task_destination_capture, 2, 0, 1, 6)
         box.addWidget(destination_box)
         route_box = self.group('MANUAL TRANSIT WAYPOINTS / ROBOT BASE TCP · mm, °')
         route_layout = QVBoxLayout(route_box)
@@ -748,7 +750,7 @@ class MainWindow(QMainWindow):
         return [[float(self.task_waypoints.item(row, column).text()) for column in range(6)]
                 for row in range(self.task_waypoints.rowCount())]
 
-    def task_capture_block_reason(self):
+    def task_capture_block_reason(self, require_array_row=True, require_calibrated_plane=True):
         if not self.connected:
             return 'Connect before capturing a workpiece point.'
         if self.client.busy:
@@ -758,7 +760,7 @@ class MainWindow(QMainWindow):
         if not self.tool_applied:
             return 'Verify or apply the calibrated TCP before capturing.'
         plane = self.current_plane()
-        if plane is None or plane.reference != 'robot_base':
+        if require_calibrated_plane and (plane is None or plane.reference != 'robot_base'):
             return 'Select a calibrated base-reference workpiece plane before capturing.'
         if self.state.get('user') != 0:
             return 'Select base workpiece 0 in the controller before capturing.'
@@ -766,7 +768,7 @@ class MainWindow(QMainWindow):
             return 'Clear controller stops and faults before capturing.'
         if not self.state.get('stopped') or not self.state.get('program_stopped'):
             return 'Wait until the robot and controller program are stationary before capturing.'
-        if self.task_points.currentRow() < 0:
+        if require_array_row and self.task_points.currentRow() < 0:
             return 'Select an array row to receive the captured point.'
         return None
 
@@ -785,6 +787,17 @@ class MainWindow(QMainWindow):
         self.task_changed()
         self.log('Captured current TCP into array row {row}: {point}', row=row+1,
                  point=', '.join(f'{value:.3f}' for value in point))
+
+    def capture_task_destination(self):
+        reason = self.task_capture_block_reason(require_array_row=False, require_calibrated_plane=False)
+        if reason:
+            self.log('Destination capture blocked: {reason}', reason=reason)
+            return
+        pose = self.state['tcp']
+        for widget, value in zip(self.task_destination, pose):
+            widget.setValue(value)
+        self.log('Captured current TCP as fixed base destination: {pose}',
+                 pose=', '.join(f'{value:.3f}' for value in pose))
 
     def task_data(self):
         return dict(rows=self.task_rows.value(), columns=self.task_columns.value(),
@@ -1197,6 +1210,9 @@ class MainWindow(QMainWindow):
         capture_reason = self.task_capture_block_reason()
         self.task_capture_button.setEnabled(capture_reason is None and not self.task_running)
         self.task_capture_button.setToolTip(self.tr(capture_reason) if capture_reason else '')
+        destination_capture_reason = self.task_capture_block_reason(require_array_row=False, require_calibrated_plane=False)
+        self.task_destination_capture.setEnabled(destination_capture_reason is None and not self.task_running)
+        self.task_destination_capture.setToolTip(self.tr(destination_capture_reason) if destination_capture_reason else '')
         for widget in (self.task_rows, self.task_columns, self.task_points, *self.task_destination,
                        self.task_waypoints, self.task_ack):
             widget.setEnabled(not self.client.busy and not self.task_running)

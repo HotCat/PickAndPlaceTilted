@@ -622,3 +622,27 @@ def test_capture_live_tcp_teaches_selected_array_row_in_plane_coordinates(tmp_pa
         window.connected = False
         window.close()
         app.processEvents()
+
+
+def test_capture_live_tcp_teaches_fixed_destination_in_robot_base(tmp_path):
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'capture-destination.ini'), QSettings.IniFormat))
+    pose = [450.25, -123.5, 678.75, 179.5, -12.25, 88.0]
+    try:
+        window.connected = True
+        window.tool_applied = True
+        window.state = Session().read()
+        window.state.update(tcp=pose, user=0, safe=True, errors=[], stopped=True, program_stopped=True)
+        window.state_time = time.monotonic()
+        window.task_points.clearSelection()  # Destination teaching does not depend on an array row.
+        assert window.task_capture_block_reason(require_array_row=False, require_calibrated_plane=False) is None
+        window.refresh()
+        assert window.task_destination_capture.isEnabled()
+        window.task_destination_capture.click()
+        assert [widget.value() for widget in window.task_destination] == pytest.approx(pose)
+        assert 'Captured current TCP as fixed base destination' in window.messages.toPlainText()
+    finally:
+        window.connected = False
+        window.close()
+        app.processEvents()
