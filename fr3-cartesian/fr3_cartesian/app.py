@@ -171,6 +171,10 @@ class MainWindow(QMainWindow):
             QPushButton:disabled { color: #657781; background: #1c2930; }
             QPushButton#stop { background: #b12f43; font-weight: 700; font-size: 20px; padding: 15px; }
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget, QTextEdit { background: #182732; border: 1px solid #39515f; padding: 5px; }
+            QTableWidget { background: #182732; alternate-background-color: #1e303b; color: #e5ecf0; gridline-color: #344955; border: 1px solid #39515f; selection-background-color: #287968; selection-color: #ffffff; }
+            QTableWidget::item { padding: 5px; }
+            QHeaderView::section { background: #223440; color: #89cfeb; border: 1px solid #344955; padding: 6px; }
+            QTableCornerButton::section { background: #223440; border: 1px solid #344955; }
             QTabWidget::pane { border: 1px solid #344955; }
             QTabBar::tab { background: #223440; padding: 12px; }
             QTabBar::tab:selected { background: #355565; color: #65e6c7; }
@@ -641,6 +645,7 @@ class MainWindow(QMainWindow):
         self.task_points = QTableWidget(6, 5)
         self.task_points.setHorizontalHeaderLabels([self.tr(text) for text in ('Row', 'Column', 'Plane X / mm', 'Plane Y / mm', 'Plane Z / mm')])
         self.task_points.horizontalHeader().setStretchLastSection(True)
+        self.task_points.setAlternatingRowColors(True)
         self.task_points.setMaximumHeight(255)
         box.addWidget(self.task_points)
         box.addWidget(self.paragraph('Edit each cell directly in plane coordinates. Row-major order is the pick order. Changing the dimensions regenerates a regular 30 mm grid while preserving overlapping edited cells.'))
@@ -656,6 +661,7 @@ class MainWindow(QMainWindow):
         self.task_waypoints = QTableWidget(0, 6)
         self.task_waypoints.setHorizontalHeaderLabels([self.tr(text) for text in ('X / mm', 'Y / mm', 'Z / mm', 'RX / °', 'RY / °', 'RZ / °')])
         self.task_waypoints.horizontalHeader().setStretchLastSection(True)
+        self.task_waypoints.setAlternatingRowColors(True)
         self.task_waypoints.setMaximumHeight(170)
         route_layout.addWidget(self.task_waypoints)
         route_buttons = QHBoxLayout()
