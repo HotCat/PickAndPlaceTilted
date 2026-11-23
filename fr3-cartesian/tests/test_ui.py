@@ -594,3 +594,31 @@ def test_static_pick_place_recipe_runs_serially_in_simulator_and_persists(tmp_pa
     finally:
         window.close()
         app.processEvents()
+
+
+def test_capture_live_tcp_teaches_selected_array_row_in_plane_coordinates(tmp_path):
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'capture-task.ini'), QSettings.IniFormat))
+    plane = Plane.teach('pick plane', [[100, 200, 300], [200, 200, 300], [100, 300, 310]])
+    try:
+        window.planes = [plane]
+        window.sync_planes()
+        window.connected = True
+        window.tool_applied = True
+        window.state = Session().read()
+        window.state.update(tcp=[*plane.to_base([42.5, 27.25, 6.0]), 180, 0, 0], user=0,
+                             safe=True, errors=[], stopped=True, program_stopped=True)
+        window.state_time = time.monotonic()
+        window.task_points.setCurrentCell(2, 2)
+        assert window.task_capture_block_reason() is None
+        window.refresh()
+        assert window.task_capture_button.isEnabled()
+        window.capture_task_point()
+        captured = [float(window.task_points.item(2, column).text()) for column in (2, 3, 4)]
+        assert captured == pytest.approx([42.5, 27.25, 6.0])
+        assert 'Captured current TCP into array row 3' in window.messages.toPlainText()
+    finally:
+        window.connected = False
+        window.close()
+        app.processEvents()

@@ -8,7 +8,7 @@ import time
 from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QSignalBlocker, QTranslator, QLibraryInfo
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMainWindow, QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QTabWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
@@ -648,9 +648,11 @@ class MainWindow(QMainWindow):
         self.task_points.setHorizontalHeaderLabels([self.tr(text) for text in ('Row', 'Column', 'Plane X / mm', 'Plane Y / mm', 'Plane Z / mm')])
         self.task_points.horizontalHeader().setStretchLastSection(True)
         self.task_points.setAlternatingRowColors(True)
+        self.task_points.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.task_points.setMaximumHeight(255)
         box.addWidget(self.task_points)
-        box.addWidget(self.paragraph('Edit each cell directly in plane coordinates. Row-major order is the pick order. Changing the dimensions regenerates a regular 30 mm grid while preserving overlapping edited cells.'))
+        box.addWidget(self.paragraph('Jog to each part with 3 XYZ controls, select its array row, then capture the live TCP position. You can still edit coordinates directly for fine tuning. Row-major order is the pick order; resizing preserves overlapping edits and fills new cells on a 30 mm grid.'))
+        self.task_capture_button = self.button('Capture current TCP into selected row', self.capture_task_point, box)
         self.task_destination = [number(-2000, 2000, value, 2) for value in (300, 0, 200, 180, 0, 0)]
         destination_box = self.group('FIXED DESTINATION / ROBOT BASE TCP · mm, °')
         destination_grid = QGridLayout(destination_box)
@@ -687,11 +689,13 @@ class MainWindow(QMainWindow):
         self.task_rows.valueChanged.connect(self.resize_task_array)
         self.task_columns.valueChanged.connect(self.resize_task_array)
         self.task_points.itemChanged.connect(self.task_changed)
+        self.task_points.itemSelectionChanged.connect(self.refresh)
         for widget in self.task_destination:
             widget.valueChanged.connect(self.task_changed)
         self.task_waypoints.itemChanged.connect(self.task_changed)
         self.task_ack.toggled.connect(self.refresh)
         self.resize_task_array()
+        self.task_points.setCurrentCell(0, 2)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet('QScrollArea { background-color: #101820; border: none; }')
@@ -743,6 +747,44 @@ class MainWindow(QMainWindow):
     def task_waypoint_values(self):
         return [[float(self.task_waypoints.item(row, column).text()) for column in range(6)]
                 for row in range(self.task_waypoints.rowCount())]
+
+    def task_capture_block_reason(self):
+        if not self.connected:
+            return 'Connect before capturing a workpiece point.'
+        if self.client.busy:
+            return 'Wait for the current robot command to finish before capturing.'
+        if self.state is None or time.monotonic()-self.state_time >= 1.2:
+            return 'Waiting for fresh robot feedback before capturing.'
+        if not self.tool_applied:
+            return 'Verify or apply the calibrated TCP before capturing.'
+        plane = self.current_plane()
+        if plane is None or plane.reference != 'robot_base':
+            return 'Select a calibrated base-reference workpiece plane before capturing.'
+        if self.state.get('user') != 0:
+            return 'Select base workpiece 0 in the controller before capturing.'
+        if not self.state.get('safe') or any(self.state.get('errors', [])):
+            return 'Clear controller stops and faults before capturing.'
+        if not self.state.get('stopped') or not self.state.get('program_stopped'):
+            return 'Wait until the robot and controller program are stationary before capturing.'
+        if self.task_points.currentRow() < 0:
+            return 'Select an array row to receive the captured point.'
+        return None
+
+    def capture_task_point(self):
+        reason = self.task_capture_block_reason()
+        if reason:
+            self.log('Point capture blocked: {reason}', reason=reason)
+            return
+        row = self.task_points.currentRow()
+        point = self.current_plane().from_base(self.state['tcp'][:3])
+        self.task_points.blockSignals(True)
+        for column, value in zip((2, 3, 4), point):
+            self.task_points.item(row, column).setText(f'{value:.3f}')
+        self.task_points.blockSignals(False)
+        self.task_points.selectRow(row)
+        self.task_changed()
+        self.log('Captured current TCP into array row {row}: {point}', row=row+1,
+                 point=', '.join(f'{value:.3f}' for value in point))
 
     def task_data(self):
         return dict(rows=self.task_rows.value(), columns=self.task_columns.value(),
@@ -1152,6 +1194,9 @@ class MainWindow(QMainWindow):
         self.task_start.setEnabled(reason is None and not self.task_running)
         self.task_start.setToolTip(self.tr(reason) if reason else '')
         self.task_cancel.setEnabled(self.task_running)
+        capture_reason = self.task_capture_block_reason()
+        self.task_capture_button.setEnabled(capture_reason is None and not self.task_running)
+        self.task_capture_button.setToolTip(self.tr(capture_reason) if capture_reason else '')
         for widget in (self.task_rows, self.task_columns, self.task_points, *self.task_destination,
                        self.task_waypoints, self.task_ack):
             widget.setEnabled(not self.client.busy and not self.task_running)
