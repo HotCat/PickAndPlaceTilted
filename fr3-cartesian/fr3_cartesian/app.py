@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMainWindow, QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .client import RobotClient
@@ -19,6 +19,7 @@ from .geometry import Plane, calibrate_pivot, checked_target, check_current_plan
 from .i18n import LANGUAGES, translate
 from .messages import Message, OperatorValueError, error_message
 from .persistence import read_calibration, write_calibration
+from .tasks import build_trajectory, validate_array, validate_poses
 
 # Resolve beside this package, not the process working directory: the camera
 # workbenches in the parent repository have their own calibration and SDK files.
@@ -88,6 +89,9 @@ class MainWindow(QMainWindow):
         self.active_jog = None
         self.move_started = 0.
         self.last_plane_application = None
+        self.task_path = []
+        self.task_index = 0
+        self.task_running = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -142,6 +146,7 @@ class MainWindow(QMainWindow):
         self.build_tool()
         self.build_planes()
         self.build_motion()
+        self.build_pick_place()
         footer = QHBoxLayout()
         self.button('Save calibration…', self.save, footer)
         self.button('Load calibration…', self.load, footer)
@@ -252,6 +257,8 @@ class MainWindow(QMainWindow):
             getattr(widget, setter)(self.tr(source))
         for index, source in enumerate(self.tab_sources):
             self.tabs.setTabText(index, self.tr(source))
+        self.task_points.setHorizontalHeaderLabels([self.tr(text) for text in ('Row', 'Column', 'Plane X / mm', 'Plane Y / mm', 'Plane Z / mm')])
+        self.task_waypoints.setHorizontalHeaderLabels([self.tr(text) for text in ('X / mm', 'Y / mm', 'Z / mm', 'RX / °', 'RY / °', 'RZ / °')])
         with QSignalBlocker(self.mode):
             self.mode.setItemText(0, self.tr('Simulator'))
             self.mode.setItemText(1, self.tr('Real FR3'))
@@ -617,11 +624,247 @@ class MainWindow(QMainWindow):
         box.addStretch()
         self.add_tab(tab, '3  XYZ controls')
 
+    def build_pick_place(self):
+        """Build an explicit static-array recipe and inspectable base-TCP route."""
+        tab = QWidget()
+        box = QVBoxLayout(tab)
+        box.addWidget(self.paragraph('4  /  STATIC PICK AND PLACE'))
+        box.addWidget(self.paragraph('Teach every part position in the selected workpiece plane. Set one fixed destination in robot-base TCP coordinates, then add any intermediate base TCP waypoints needed to keep each straight MoveL segment clear and within 100 mm. No vision, gripper, collision planner, or automatic approach/retract is included.'))
+        row = QHBoxLayout()
+        self.task_rows = QSpinBox(); self.task_rows.setRange(1, 10); self.task_rows.setValue(3)
+        self.task_columns = QSpinBox(); self.task_columns.setRange(1, 10); self.task_columns.setValue(2)
+        row.addWidget(self.label('Array rows'))
+        row.addWidget(self.task_rows)
+        row.addWidget(self.label('Array columns'))
+        row.addWidget(self.task_columns)
+        box.addLayout(row)
+        self.task_points = QTableWidget(6, 5)
+        self.task_points.setHorizontalHeaderLabels([self.tr(text) for text in ('Row', 'Column', 'Plane X / mm', 'Plane Y / mm', 'Plane Z / mm')])
+        self.task_points.horizontalHeader().setStretchLastSection(True)
+        self.task_points.setMaximumHeight(255)
+        box.addWidget(self.task_points)
+        box.addWidget(self.paragraph('Edit each cell directly in plane coordinates. Row-major order is the pick order. Changing the dimensions regenerates a regular 30 mm grid while preserving overlapping edited cells.'))
+        self.task_destination = [number(-2000, 2000, value, 2) for value in (300, 0, 200, 180, 0, 0)]
+        destination_box = self.group('FIXED DESTINATION / ROBOT BASE TCP · mm, °')
+        destination_grid = QGridLayout(destination_box)
+        for index, (name, widget) in enumerate(zip(('X', 'Y', 'Z', 'RX', 'RY', 'RZ'), self.task_destination)):
+            destination_grid.addWidget(self.label(name), index//3, (index%3)*2)
+            destination_grid.addWidget(widget, index//3, (index%3)*2+1)
+        box.addWidget(destination_box)
+        route_box = self.group('MANUAL TRANSIT WAYPOINTS / ROBOT BASE TCP · mm, °')
+        route_layout = QVBoxLayout(route_box)
+        self.task_waypoints = QTableWidget(0, 6)
+        self.task_waypoints.setHorizontalHeaderLabels([self.tr(text) for text in ('X / mm', 'Y / mm', 'Z / mm', 'RX / °', 'RY / °', 'RZ / °')])
+        self.task_waypoints.horizontalHeader().setStretchLastSection(True)
+        self.task_waypoints.setMaximumHeight(170)
+        route_layout.addWidget(self.task_waypoints)
+        route_buttons = QHBoxLayout()
+        self.button('Add waypoint', self.add_task_waypoint, route_buttons)
+        self.button('Remove selected waypoint', self.remove_task_waypoint, route_buttons)
+        route_layout.addLayout(route_buttons)
+        box.addWidget(route_box)
+        box.addWidget(self.paragraph('For each part, the route is: source → listed waypoints → fixed destination. For the next part, it retraces the waypoint list in reverse → next source. Each arrow is a separate straight MoveL and must pass the selected plane limits and 100 mm segment cap. The destination is visited once per source point. Gripper/I/O is not controlled.'))
+        self.task_review = QTextEdit()
+        self.task_review.setReadOnly(True)
+        self.task_review.setMaximumHeight(190)
+        self.task_review.setPlainText(self.tr('Select a calibrated base-reference workpiece plane to preview the route.'))
+        box.addWidget(self.task_review)
+        self.task_ack = self.checkbox('I reviewed every base TCP waypoint, straight segment, travel bound and destination')
+        box.addWidget(self.task_ack)
+        controls = QHBoxLayout()
+        self.task_start = self.button('Start pick/place sequence', self.start_task, controls)
+        self.task_cancel = self.button('Cancel sequence', self.cancel_task, controls)
+        box.addLayout(controls)
+        box.addStretch()
+        self.task_rows.valueChanged.connect(self.resize_task_array)
+        self.task_columns.valueChanged.connect(self.resize_task_array)
+        self.task_points.itemChanged.connect(self.task_changed)
+        for widget in self.task_destination:
+            widget.valueChanged.connect(self.task_changed)
+        self.task_waypoints.itemChanged.connect(self.task_changed)
+        self.task_ack.toggled.connect(self.refresh)
+        self.resize_task_array()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(tab)
+        self.add_tab(scroll, '4  Pick/place')
+
     def log(self, text, **values):
         if text:
             message = text if isinstance(text, Message) else Message(text, values)
             self.log_entries.append((time.strftime('%H:%M:%S'), message))
             self.render_logs()
+
+    def resize_task_array(self, *_):
+        """Resize a row-major array, keeping the overlapping operator edits."""
+        old = getattr(self, 'task_points', None)
+        previous = {}
+        if old is not None:
+            for row in range(old.rowCount()):
+                items = [old.item(row, column) for column in range(5)]
+                if all(item is not None for item in items):
+                    try:
+                        key = (int(items[0].text())-1, int(items[1].text())-1)
+                        previous[key] = [float(items[column].text()) for column in (2, 3, 4)]
+                    except ValueError:
+                        # Ignore a partially edited row while preserving the
+                        # remaining valid cell coordinates during resize.
+                        continue
+        rows, columns = self.task_rows.value(), self.task_columns.value()
+        self.task_points.blockSignals(True)
+        self.task_points.setRowCount(rows*columns)
+        for row in range(rows):
+            for column in range(columns):
+                index = row*columns+column
+                values = previous.get((row, column), [column*30., row*30., 0.])
+                cells = [str(row+1), str(column+1), *(f'{value:.3f}' for value in values)]
+                for cell_column, value in enumerate(cells):
+                    item = QTableWidgetItem(value)
+                    if cell_column < 2:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.task_points.setItem(index, cell_column, item)
+        self.task_points.blockSignals(False)
+        self.task_changed()
+
+    def task_point_values(self):
+        return [[float(self.task_points.item(row, column).text()) for column in (2, 3, 4)]
+                for row in range(self.task_points.rowCount())]
+
+    def task_waypoint_values(self):
+        return [[float(self.task_waypoints.item(row, column).text()) for column in range(6)]
+                for row in range(self.task_waypoints.rowCount())]
+
+    def task_data(self):
+        return dict(rows=self.task_rows.value(), columns=self.task_columns.value(),
+                    points=validate_array(self.task_rows.value(), self.task_columns.value(), self.task_point_values()),
+                    destination=[widget.value() for widget in self.task_destination],
+                    waypoints=validate_poses(self.task_waypoint_values()))
+
+    def add_task_waypoint(self):
+        row = self.task_waypoints.rowCount()
+        self.task_waypoints.blockSignals(True)
+        self.task_waypoints.insertRow(row)
+        for column, value in enumerate(self.task_destination):
+            self.task_waypoints.setItem(row, column, QTableWidgetItem(f'{value.value():.2f}'))
+        self.task_waypoints.blockSignals(False)
+        self.task_changed()
+
+    def remove_task_waypoint(self):
+        row = self.task_waypoints.currentRow()
+        if row >= 0:
+            self.task_waypoints.removeRow(row)
+            self.task_changed()
+
+    def task_changed(self, *_):
+        if not hasattr(self, 'task_review'):
+            return
+        self.task_ack.setChecked(False)
+        self.update_task_review()
+        if hasattr(self, 'session_dirty'):
+            self.schedule_autosave()
+
+    def update_task_review(self):
+        try:
+            plane = self.current_plane()
+            if plane is None or plane.reference != 'robot_base':
+                self.task_review.setText(self.tr('Select a calibrated base-reference workpiece plane to preview the route.'))
+                return
+            data = self.task_data()
+            path = build_trajectory(plane, data['points'], data['destination'], data['waypoints'],
+                                    self.orientation or [0., 0., 0.])
+            lines = [self.tr('{count} source points · {moves} straight MoveL segments · row-major order',
+                             count=data['rows']*data['columns'], moves=len(path))]
+            lines.extend(f'{index+1:03d}. {self.task_display_name(name)}: '+', '.join(f'{value:.2f}' for value in pose)
+                         for index, (name, pose) in enumerate(path))
+            self.task_review.setText('\n'.join(lines))
+        except (ValueError, TypeError, IndexError) as exc:
+            self.task_review.setText(self.tr('The array or route contains an invalid coordinate: {detail}', detail=str(exc)))
+
+    def task_display_name(self, name):
+        for prefix in ('Pick', 'Place'):
+            if name.startswith(prefix+' '):
+                return self.tr('{kind} {index}', kind=self.tr(prefix), index=name[len(prefix)+1:])
+        for prefix in ('Route', 'Return'):
+            if name.startswith(prefix+' '):
+                return self.tr('{kind} {index}', kind=self.tr(prefix), index=name[len(prefix)+1:])
+        return name
+
+    def task_block_reason(self):
+        fresh = self.state is not None and time.monotonic()-self.state_time < 1.2
+        if not self.connected:
+            return 'Connect to the robot or simulator before starting the sequence.'
+        if not fresh:
+            return 'Waiting for fresh robot feedback.'
+        if not self.tool_applied:
+            return 'Verify or apply the saved TCP before starting the sequence.'
+        if self.current_plane() is None or self.current_plane().reference != 'robot_base':
+            return 'Select a valid base-reference workpiece plane before starting the sequence.'
+        if self.orientation is None:
+            return 'Lock the current tool orientation in XYZ controls before starting the sequence.'
+        if not self.arm.isChecked():
+            return 'Enable Cartesian motion and verify the plane directions and limits first.'
+        if self.client.busy or not self.state['stopped'] or not self.state['program_stopped']:
+            return 'Wait until the robot and controller program are stationary.'
+        if not self.state['safe'] or any(self.state['errors']):
+            return 'Robot reports a stop, collision, or fault'
+        if not self.state['enabled']:
+            return 'Enable the robot using the controller first'
+        if self.state['mode'] != 1:
+            return 'Use controller manual mode for teaching jog'
+        if self.state['user'] != 0:
+            return 'Select base workpiece 0 in the controller before Cartesian motion.'
+        if not self.task_ack.isChecked():
+            return 'Review every route pose and check the sequence acknowledgment before starting.'
+        try:
+            data = self.task_data()
+            path = build_trajectory(self.current_plane(), data['points'], data['destination'],
+                                    data['waypoints'], self.orientation)
+            previous = self.state['tcp']
+            for _, pose in path:
+                target = self.current_plane().from_base(pose[:3])
+                checked_target(self.current_plane(), previous, target, pose[3:], self.limits())
+                previous = pose
+        except (ValueError, TypeError, IndexError) as exc:
+            return 'A route target violates plane limits or the 100 mm segment cap.'
+        return None
+
+    def start_task(self):
+        reason = self.task_block_reason()
+        if reason:
+            self.log('Pick/place sequence blocked: {reason}', reason=reason)
+            self.refresh()
+            return
+        data = self.task_data()
+        self.task_path = build_trajectory(self.current_plane(), data['points'], data['destination'],
+                                          data['waypoints'], self.orientation)
+        self.task_index = 0
+        self.task_running = True
+        self.teach_enabled.setChecked(False)
+        self.log('Pick/place sequence started: {count} source points.', count=data['rows']*data['columns'])
+        self.send_task_segment()
+
+    def send_task_segment(self):
+        if not self.task_running:
+            return
+        if self.task_index >= len(self.task_path):
+            self.task_running = False
+            self.task_path = []
+            self.log('Pick/place sequence completed. No gripper I/O was performed.')
+            self.refresh()
+            return
+        name, pose = self.task_path[self.task_index]
+        self.log('Sequence move {index}/{count}: {name}', index=self.task_index+1,
+                 count=len(self.task_path), name=self.task_display_name(name))
+        plane_target = self.current_plane().from_base(pose[:3])
+        if not self.send_move(plane_target, speed=self.speed.value(), orientation=pose[3:]):
+            self.task_running = False
+            self.refresh()
+
+    def cancel_task(self):
+        if self.task_running or self.client.pending and self.client.pending[1] == 'move':
+            self.task_running = False
+            self.task_path = []
+            self.stop(reason=Message('Pick/place sequence canceled by operator'))
 
     def diagnostic(self, text):
         if isinstance(text, Message):
@@ -636,6 +879,8 @@ class MainWindow(QMainWindow):
 
     def failure(self, text):
         was_connected = self.connected
+        self.task_running = False
+        self.task_path = []
         self.repeat_direction = None
         self.disarm()
         self.teach_enabled.setChecked(False)
@@ -650,6 +895,8 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def move_rejected(self, message):
+        self.task_running = False
+        self.task_path = []
         self.disarm()
         self.log('Move not sent: {reason}. Connection remains open.', reason=message)
         self.refresh()
@@ -750,7 +997,10 @@ class MainWindow(QMainWindow):
             self.capture(kind)
         elif method == 'move':
             self.log('Plane jog stopped on release' if state.get('plane_jog_stopped') else 'Linear move completed')
-            if self.plane_arrow_held and self.repeat_direction and self.arm.isChecked():
+            if self.task_running:
+                self.task_index += 1
+                QTimer.singleShot(80, self.send_task_segment)
+            elif self.plane_arrow_held and self.repeat_direction and self.arm.isChecked():
                 self.plane_repeat_timer.start(80)
         if not state['safe'] or any(state['errors']):
             self.stop(reason=Message('Controller stop/fault: safe={safe}, errors={errors}',
@@ -831,6 +1081,8 @@ class MainWindow(QMainWindow):
         self.tcp_status.setText(self.tr('TCP verified on controller · tool {slot}', slot=self.slot.value()) if self.tool_applied
                                 else self.tr('Saved TCP is not verified on the controller.'))
         plane = self.current_plane()
+        if hasattr(self, 'task_review'):
+            self.update_task_review()
         reteach_reason = self.plane_reteach_reason()
         self.workpiece_slot.setEnabled(not self.client.busy and not self.arm.isChecked())
         self.plane_replace_confirm.setEnabled(not self.client.busy and plane is not None and reteach_reason is None)
@@ -886,6 +1138,14 @@ class MainWindow(QMainWindow):
             w.setEnabled(not self.client.busy and self.active_jog is None)
         for w in (self.jog_speed, self.jog_speed_slider, self.base_jog_speed, self.base_jog_speed_slider):
             w.setEnabled(not self.client.busy and self.active_jog is None)
+        reason = self.task_block_reason()
+        self.task_start.setEnabled(reason is None and not self.task_running)
+        self.task_start.setToolTip(self.tr(reason) if reason else '')
+        self.task_cancel.setEnabled(self.task_running)
+        for widget in (self.task_rows, self.task_columns, self.task_points, *self.task_destination,
+                       self.task_waypoints, self.task_ack):
+            widget.setEnabled(not self.client.busy and not self.task_running)
+        self.task_review.setToolTip(self.tr(reason) if reason else '')
 
     def jog_block_reason(self, fresh):
         if not self.connected:
@@ -1130,6 +1390,8 @@ class MainWindow(QMainWindow):
     def arm_changed(self, checked):
         if not checked:
             self.arrow_released()
+            if self.task_running:
+                self.cancel_task()
         if checked:
             missing = next((reason for ready, reason in (
                 (self.connected, 'Connect to the robot before enabling Cartesian motion.'),
@@ -1213,15 +1475,16 @@ class MainWindow(QMainWindow):
     def move_target(self):
         self.send_move([w.value() for w in self.targets])
 
-    def send_move(self, target, speed=None, jog=False):
+    def send_move(self, target, speed=None, jog=False, orientation=None):
         if not self.arm.isChecked() or self.client.busy:
             return False
         try:
             if time.monotonic()-self.state_time > 1:
                 raise OperatorValueError('Position is stale; wait for live feedback')
             plane = self.current_plane()
-            checked_target(plane, self.state['tcp'], target, self.orientation, self.limits())
-            args = dict(plane=asdict(plane), target=target, orientation=self.orientation,
+            orientation = self.orientation if orientation is None else orientation
+            checked_target(plane, self.state['tcp'], target, orientation, self.limits())
+            args = dict(plane=asdict(plane), target=target, orientation=orientation,
                         bounds=self.limits(), speed=self.speed.value() if speed is None else speed)
             accepted = self.client.start_plane_jog(args) if jog else self.client.call('move', args)
         except ValueError as exc:
@@ -1233,6 +1496,8 @@ class MainWindow(QMainWindow):
 
     def stop(self, *, reason=None):
         self.log('Stop requested: {reason}', reason=reason or Message('Manual stop request'))
+        self.task_running = False
+        self.task_path = []
         self.repeat_direction = None
         self.active_jog = None
         self.disarm()
@@ -1257,6 +1522,8 @@ class MainWindow(QMainWindow):
         self.plane_combo.currentIndexChanged.connect(self.schedule_autosave)
         self.hold.toggled.connect(self.schedule_autosave)
         self.tabs.currentChanged.connect(self.schedule_autosave)
+        self.task_rows.valueChanged.connect(self.schedule_autosave)
+        self.task_columns.valueChanged.connect(self.schedule_autosave)
 
     def calibration_document(self):
         plane = self.current_plane()
@@ -1274,6 +1541,7 @@ class MainWindow(QMainWindow):
                     jog=dict(joint_speed=self.jog_speed.value(), tcp_speed=self.base_jog_speed.value(),
                              joint_limit=self.joint_limit.value(), linear_limit=self.base_linear_limit.value(),
                              rotation_limit=self.base_rotation_limit.value()),
+                    task=self.task_data(),
                     active_tab=self.tabs.currentIndex())
 
     def schedule_autosave(self, *_):
@@ -1330,6 +1598,26 @@ class MainWindow(QMainWindow):
             self.joint_limit.setValue(jog['joint_limit'])
             self.base_linear_limit.setValue(jog['linear_limit'])
             self.base_rotation_limit.setValue(jog['rotation_limit'])
+            task = data['task']
+            self.task_rows.setValue(task['rows'])
+            self.task_columns.setValue(task['columns'])
+            self.resize_task_array()
+            self.task_points.blockSignals(True)
+            for row, point in enumerate(task['points']):
+                for column, value in zip((2, 3, 4), point):
+                    self.task_points.item(row, column).setText(f'{value:.3f}')
+            self.task_points.blockSignals(False)
+            for widget, value in zip(self.task_destination, task['destination']):
+                widget.setValue(value)
+            self.task_waypoints.blockSignals(True)
+            self.task_waypoints.setRowCount(0)
+            for pose in task['waypoints']:
+                row = self.task_waypoints.rowCount()
+                self.task_waypoints.insertRow(row)
+                for column, value in enumerate(pose):
+                    self.task_waypoints.setItem(row, column, QTableWidgetItem(f'{value:.2f}'))
+            self.task_waypoints.blockSignals(False)
+            self.task_ack.setChecked(False)
             for widget, value in zip(self.targets, xyz['targets']):
                 widget.setValue(value)
             self.orientation = None

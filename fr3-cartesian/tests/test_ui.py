@@ -301,7 +301,7 @@ def test_live_poll_keeps_jog_usable_and_backend_can_switch(tmp_path):
         wait_until(app, lambda: window.connected and window.client.pending is None)
         window.timer.stop()
         assert window.mode.count() == 2
-        assert window.tabs.count() == 3 and not hasattr(window, 'pendant')
+        assert window.tabs.count() == 4 and not hasattr(window, 'pendant')
         window.teach_enabled.setChecked(True)
         window.refresh()
         assert all(button.isEnabled() for button in window.joint_buttons)
@@ -524,6 +524,73 @@ def test_plane_arrow_release_interrupts_current_step_and_keeps_connection(tmp_pa
         wait_until(app, lambda: window.client.pending is None)
         assert window.connected and window.tool_applied
         assert np.linalg.norm(np.array(window.state['tcp'][:3])-stopped) > 0
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_static_pick_place_recipe_runs_serially_in_simulator_and_persists(tmp_path):
+    from fr3_cartesian.geometry import calibrate_pivot
+    from fr3_cartesian.persistence import read_calibration
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path/'static-task.ini'), QSettings.IniFormat)
+    session_path = tmp_path/'calibration-session.json'
+    window = MainWindow(settings=settings, session_path=session_path)
+    window.mode.setCurrentIndex(0)
+    window.show()
+    try:
+        simulator = Session()
+        window.tool_samples = [simulator.demo_pose('pivot', i)['flange'] for i in range(4)]
+        window.tool_result = asdict(calibrate_pivot(window.tool_samples))
+        window.source = 'simulation'
+        window.planes = [Plane.teach('my plane', [[300, 0, 200], [400, 20, 200], [280, 100, 210]])]
+        window.sync_planes()
+        window.connect_robot()
+        wait_until(app, lambda: window.connected and not window.client.busy)
+        window.timer.stop()
+        window.apply_tool()
+        wait_until(app, lambda: window.tool_applied and not window.client.busy)
+        for index in range(3):
+            window.demo_plane()
+            wait_until(app, lambda: len(window.plane_points) == index+1 and not window.client.busy)
+        window.add_plane()
+        # Return to base and create an active tool orientation before arming.
+        window.base_frame_button.click()
+        wait_until(app, lambda: window.state['user'] == 0 and not window.client.busy)
+        window.tabs.setCurrentIndex(2)
+        window.lock_button.click()
+        wait_until(app, lambda: window.orientation is not None and not window.client.busy)
+        window.axes_verified.setChecked(True)
+        window.arm.setChecked(True)
+        window.tabs.setCurrentIndex(3)
+        window.task_rows.setValue(1)
+        window.task_columns.setValue(2)
+        for row, point in enumerate(([0, 5, 0], [5, 5, 0])):
+            for column, value in enumerate(point, start=2):
+                window.task_points.item(row, column).setText(str(value))
+        for widget, value in zip(window.task_destination, [320, 30, 210, *window.orientation]):
+            widget.setValue(value)
+        assert window.task_waypoints.rowCount() == 0
+        assert window.task_block_reason() is not None  # Operator review is required.
+        window.task_ack.setChecked(True)
+        assert window.task_block_reason() is None
+        assert window.task_start.isEnabled()
+        assert 'Pick 1' in window.task_review.toPlainText()
+        assert 'Place 2' in window.task_review.toPlainText()
+        window.task_start.click()
+        assert window.task_running
+        wait_until(app, lambda: not window.task_running and not window.client.busy, seconds=8)
+        assert window.connected and window.tool_applied and window.arm.isChecked()
+        assert window.state['tcp'] == pytest.approx([window.task_destination[i].value() for i in range(6)], abs=.02)
+        assert 'Pick/place sequence completed' in window.messages.toPlainText()
+        window.schedule_autosave()
+        window.autosave()
+        saved = read_calibration(session_path)
+        assert saved['task']['rows'] == 1 and saved['task']['columns'] == 2
+        assert saved['task']['points'] == [[0, 5, 0], [5, 5, 0]]
+        assert saved['task']['destination'] == [320, 30, 210, *window.orientation]
+        assert 'task_ack' not in json.loads(session_path.read_text())  # execution permission is never persisted
     finally:
         window.close()
         app.processEvents()

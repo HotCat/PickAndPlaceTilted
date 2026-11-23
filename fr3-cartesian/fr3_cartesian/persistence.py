@@ -8,6 +8,7 @@ from PySide6.QtCore import QIODevice, QSaveFile
 
 from .geometry import Plane, calibrate_pivot, vector
 from .messages import OperatorValueError
+from .tasks import validate_array, validate_poses
 
 
 def bounded(value, low, high):
@@ -18,6 +19,8 @@ def bounded(value, low, high):
 
 
 def integer(value, low, high):
+    if isinstance(value, bool):
+        raise OperatorValueError('Invalid saved calibration setting')
     result = bounded(value, low, high)
     if result != int(result):
         raise OperatorValueError('Invalid saved calibration setting')
@@ -70,6 +73,20 @@ def decode_calibration(data):
     if not isinstance(hold, bool):
         raise OperatorValueError('Invalid saved calibration setting')
     jog = data.get('jog', {})
+    task = data.get('task', {})
+    array_rows = integer(task.get('rows', 3), 1, 10)
+    array_columns = integer(task.get('columns', 2), 1, 10)
+    default_points = [[column * 30., row * 30., 0.]
+                      for row in range(array_rows) for column in range(array_columns)]
+    array_points = validate_array(array_rows, array_columns, task.get('points', default_points))
+    destination = vector(task.get('destination', [300., 0., 200., 180., 0., 0.]), 6).tolist()
+    if any(abs(value) > 2000 for value in destination[:3]):
+        raise OperatorValueError('Invalid saved calibration setting')
+    saved_tab = integer(data.get('active_tab', 0), 0, 4)
+    # Before the pick/place tab existed, saved index 3 was the retired joystick
+    # pendant. Reopen those calibration sessions on the useful XYZ panel.
+    if 'task' not in data and saved_tab == 3:
+        saved_tab = 2
     return dict(
         source=source, samples=samples, samples_reference=samples_reference,
         tolerance=tolerance, tool=result, planes=planes,
@@ -80,12 +97,15 @@ def decode_calibration(data):
         xyz=dict(targets=targets, step=bounded(xyz.get('step', 1), .1, 10),
                  speed=bounded(xyz.get('speed', 3), .5, 10), hold=hold,
                  orientation_reference=orientation),
-        active_tab=integer(data.get('active_tab', 0), 0, 3),
+        active_tab=saved_tab,
         jog=dict(joint_speed=integer(jog.get('joint_speed', 3), 1, 10),
                  tcp_speed=integer(jog.get('tcp_speed', 3), 1, 10),
                  joint_limit=bounded(jog.get('joint_limit', .5), .1, 10),
                  linear_limit=bounded(jog.get('linear_limit', 5), .1, 50),
                  rotation_limit=bounded(jog.get('rotation_limit', 1), .1, 10)),
+        task=dict(rows=array_rows, columns=array_columns, points=array_points,
+                  destination=destination,
+                  waypoints=validate_poses(task.get('waypoints', []))),
     )
 
 

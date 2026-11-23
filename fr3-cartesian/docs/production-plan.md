@@ -10,7 +10,7 @@ This remains a commissioning prototype. Production development should proceed ag
 
 当前版本仍是调试原型。后续开发应结合实际控制器、夹爪、夹具和产线接口开展，并为每个阶段明确验收标准。
 
-The operator UI now focuses on calibration, native joint/base jogs and calibrated XYZ positioning. The joystick pendant was removed after hardware trials did not meet the expected responsiveness. Its backend and tests remain as historical experiments; they are not the foundation for the next pick/place cycle.
+The operator UI now focuses on calibration, native joint/base jogs, calibrated XYZ positioning, and a basic static array-to-fixed-destination coordinate sequence. The joystick pendant was removed after hardware trials did not meet the expected responsiveness. Its backend and tests remain as historical experiments; they are not the foundation for the next pick/place cycle.
 
 当前界面聚焦标定、原生关节 / 基坐标点动和标定平面 XYZ 定位。摇杆实机试用未达到预期手感，已从界面移除；相关后台与测试仅作为历史实验保留。下一步应围绕取放任务运动迭代。
 
@@ -31,6 +31,6 @@ Keep the GUI as a presentation layer. Move the application workflow into a contr
 
 保持 GUI 作为显示与交互层。在增加自动循环前，将业务流程提取至控制器 / 状态机层；机器人进程继续独占 SDK。配方、设备配置与标定应分别建模并管理版本。持久化日志应使用稳定事件编号与结构化参数；当前界面日志只在内存中保留有限条目，并不是审计数据库。
 
-The next engineering milestone is the controller/SDK integration and measured calibration verification. Gripper type, available I/O and sensors, PLC protocol, positioning tolerance and target cycle time are inputs to the subsequent cycle design. The software stop and TCP travel box do not replace the cell's physical safety system or assessment.
+The static pick/place prototype emits ordered straight TCP moves but has no gripper or vision integration. The next engineering milestone is measured controller/SDK and calibration verification before adding task-specific approach, grip verification and recovery. Gripper type, available I/O and sensors, PLC protocol, positioning tolerance and target cycle time are inputs to the subsequent cycle design. The software stop and TCP travel box do not replace the cell's physical safety system or assessment.
 
 下一项工程里程碑是控制器 / SDK 适配和标定精度实测。夹爪类型、可用 I/O 与传感器、PLC 协议、定位公差及目标节拍，是后续自动循环设计的输入。软件停止和 TCP 行程限制不能代替工作站的物理安全系统及其评估。

@@ -155,6 +155,35 @@ def test_failed_serialization_preserves_previous_file(tmp_path, document):
     assert path.read_bytes() == before
 
 
+def test_static_array_recipe_defaults_migrates_and_roundtrips(document, tmp_path):
+    decoded = decode_calibration(document)
+    assert decoded['task']['rows'] == 3 and decoded['task']['columns'] == 2
+    assert decoded['task']['points'] == [[0, 0, 0], [30, 0, 0], [0, 30, 0],
+                                         [30, 30, 0], [0, 60, 0], [30, 60, 0]]
+    assert decoded['task']['waypoints'] == []
+    document['task'] = dict(rows=2, columns=2,
+        points=[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
+        destination=[200, 300, 400, 180, 0, 10],
+        waypoints=[[150, 250, 350, 180, 0, 0]])
+    path = tmp_path/'task-calibration.json'
+    write_calibration(path, document)
+    restored = read_calibration(path)
+    assert restored['task'] == document['task']
+
+
+@pytest.mark.parametrize('task', [
+    dict(rows=0, columns=2, points=[]),
+    dict(rows=2, columns=2, points=[[0, 0, 0]]*3),
+    dict(rows=1, columns=1, points=[[float('nan'), 0, 0]]),
+    dict(rows=1, columns=1, points=[[0, 0, 0]], destination=[3000, 0, 0, 0, 0, 0]),
+    dict(rows=1, columns=1, points=[[0, 0, 0]], waypoints=[[0, 0, 0]]*21),
+])
+def test_invalid_static_array_recipe_is_rejected(document, task):
+    document['task'] = task
+    with pytest.raises(ValueError):
+        decode_calibration(document)
+
+
 @pytest.mark.parametrize('language', ['en', 'zh_CN'])
 def test_autosave_restart_keeps_planes_draft_and_xyz_without_robot_commands(tmp_path, monkeypatch, document, language):
     app = QApplication.instance() or QApplication([])
@@ -290,7 +319,7 @@ def test_jog_speeds_restore_with_legacy_joystick_tab_and_no_input_profile_loadin
     write_calibration(tmp_path/'calibration-session.json',document)
     window=MainWindow(settings=settings,language=language)
     try:
-        assert window.tabs.count()==3 and window.tabs.currentIndex()==2
+        assert window.tabs.count()==4 and window.tabs.currentIndex()==2
         assert not hasattr(window,'pendant')
         assert window.base_jog_speed.value()==window.base_jog_speed_slider.value()==7
         assert window.jog_speed.value()==2

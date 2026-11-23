@@ -193,3 +193,29 @@ separate production plan for acceptance milestones.
 后续应围绕取放配方和状态机开发，而不是继续扩展摇杆。相机像素 / CAD 配准结果需要
 经过已验证的相机到工件平面标定才能生成机器人目标。自动循环需明确接近、下降、
 夹取确认、抬升、转移、释放及异常恢复；禁止把相机回调直接接到运动指令。
+
+
+## Static pick/place coordinate recipe
+
+`tasks.py` is a pure helper: it maps each row-major plane XYZ source through the
+saved plane transform to base, gives it the current explicitly locked orientation,
+and emits named, absolute base TCP poses. A fixed six-axis base destination and an
+operator-authored route list define the transfer. The same route list is reversed
+between the destination and the following source. It adds no hidden lift, gripper
+state, vision correction or collision planner.
+
+The UI review gate checks each consecutive segment against the same workplane TCP
+limits, current start pose and 100 mm per-segment `MoveL` cap. Each target then goes
+through the worker's existing TCP/tool/Wobj/fresh-state preflight. The worker and
+client remain single-flight; GUI completion advances one segment at a time only
+after arrival/stationary feedback. A failed or rejected point clears the remaining
+sequence; operator cancellation uses STOP and invalidates the session. There is no
+automatic resume after a failed point or restart. Recipe coordinates are persisted,
+but the review acknowledgment, start permission and active sequence are not.
+
+The table is a manually calibrated static source list. It is not a vision interface:
+future localization must transform measured workpiece coordinates into this same
+plane frame and should carry freshness and confidence before a cycle can consume it.
+The UI exposes the ordered base poses for review, but operators must validate the
+full physical arm path. Straight segments between points can still intersect a
+fixture even if both endpoints are inside the TCP box.
