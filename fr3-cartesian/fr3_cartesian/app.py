@@ -631,6 +631,8 @@ class MainWindow(QMainWindow):
     def build_pick_place(self):
         """Build an explicit static-array recipe and inspectable base-TCP route."""
         tab = QWidget()
+        tab.setObjectName('pickPlaceContent')
+        tab.setStyleSheet('QWidget#pickPlaceContent { background-color: #101820; }')
         box = QVBoxLayout(tab)
         box.addWidget(self.paragraph('4  /  STATIC PICK AND PLACE'))
         box.addWidget(self.paragraph('Teach every part position in the selected workpiece plane. Set one fixed destination in robot-base TCP coordinates, then add any intermediate base TCP waypoints needed to keep each straight MoveL segment clear and within 100 mm. No vision, gripper, collision planner, or automatic approach/retract is included.'))
@@ -692,6 +694,8 @@ class MainWindow(QMainWindow):
         self.resize_task_array()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet('QScrollArea { background-color: #101820; border: none; }')
+        scroll.viewport().setStyleSheet('background-color: #101820;')
         scroll.setWidget(tab)
         self.add_tab(scroll, '4  Pick/place')
 
