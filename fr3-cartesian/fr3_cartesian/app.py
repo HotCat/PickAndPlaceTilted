@@ -19,7 +19,7 @@ from .geometry import Plane, calibrate_pivot, checked_target, check_current_plan
 from .i18n import LANGUAGES, translate
 from .messages import Message, OperatorValueError, error_message
 from .persistence import read_calibration, write_calibration
-from .tasks import build_trajectory, validate_array, validate_poses
+from .tasks import build_trajectory, validate_array, validate_poses, validate_routes
 
 # Resolve beside this package, not the process working directory: the camera
 # workbenches in the parent repository have their own calibration and SDK files.
@@ -92,6 +92,8 @@ class MainWindow(QMainWindow):
         self.task_path = []
         self.task_index = 0
         self.task_running = False
+        self.task_routes = {}  # (array row, column) -> editable outbound base TCP poses
+        self.task_route_key = None  # owner of the waypoint table currently displayed
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -649,6 +651,7 @@ class MainWindow(QMainWindow):
         self.task_points.horizontalHeader().setStretchLastSection(True)
         self.task_points.setAlternatingRowColors(True)
         self.task_points.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.task_points.setSelectionMode(QAbstractItemView.SingleSelection)
         self.task_points.setMaximumHeight(255)
         box.addWidget(self.task_points)
         box.addWidget(self.paragraph('Jog to each part with 3 XYZ controls, select its array row, then capture the live TCP position. You can still edit coordinates directly for fine tuning. Row-major order is the pick order; resizing preserves overlapping edits and fills new cells on a 30 mm grid.'))
@@ -664,6 +667,8 @@ class MainWindow(QMainWindow):
         box.addWidget(destination_box)
         route_box = self.group('MANUAL TRANSIT WAYPOINTS / ROBOT BASE TCP · mm, °')
         route_layout = QVBoxLayout(route_box)
+        self.task_route_label = self.label('Select an array part to teach its independent transit route.')
+        route_layout.addWidget(self.task_route_label)
         self.task_waypoints = QTableWidget(0, 6)
         self.task_waypoints.setHorizontalHeaderLabels([self.tr(text) for text in ('X / mm', 'Y / mm', 'Z / mm', 'RX / °', 'RY / °', 'RZ / °')])
         self.task_waypoints.horizontalHeader().setStretchLastSection(True)
@@ -671,11 +676,11 @@ class MainWindow(QMainWindow):
         self.task_waypoints.setMaximumHeight(170)
         route_layout.addWidget(self.task_waypoints)
         route_buttons = QHBoxLayout()
-        self.button('Add waypoint', self.add_task_waypoint, route_buttons)
-        self.button('Remove selected waypoint', self.remove_task_waypoint, route_buttons)
+        self.task_add_waypoint = self.button('Add waypoint', self.add_task_waypoint, route_buttons)
+        self.task_remove_waypoint = self.button('Remove selected waypoint', self.remove_task_waypoint, route_buttons)
         route_layout.addLayout(route_buttons)
         box.addWidget(route_box)
-        box.addWidget(self.paragraph('For each part, the route is: source → listed waypoints → fixed destination. For the next part, it retraces the waypoint list in reverse → next source. Each arrow is a separate straight MoveL and must pass the selected plane limits and 100 mm segment cap. The destination is visited once per source point. Gripper/I/O is not controlled.'))
+        box.addWidget(self.paragraph('Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Straight MoveL segments must satisfy plane limits and the 100 mm cap. No gripper I/O is performed.'))
         self.task_review = QTextEdit()
         self.task_review.setReadOnly(True)
         self.task_review.setMaximumHeight(190)
@@ -692,9 +697,11 @@ class MainWindow(QMainWindow):
         self.task_columns.valueChanged.connect(self.resize_task_array)
         self.task_points.itemChanged.connect(self.task_changed)
         self.task_points.itemSelectionChanged.connect(self.refresh)
+        self.task_points.currentCellChanged.connect(self.task_part_selected)
         for widget in self.task_destination:
             widget.valueChanged.connect(self.task_changed)
         self.task_waypoints.itemChanged.connect(self.task_changed)
+        self.task_waypoints.itemSelectionChanged.connect(self.refresh)
         self.task_ack.toggled.connect(self.refresh)
         self.resize_task_array()
         self.task_points.setCurrentCell(0, 2)
@@ -713,6 +720,8 @@ class MainWindow(QMainWindow):
 
     def resize_task_array(self, *_):
         """Resize a row-major array, keeping the overlapping operator edits."""
+        self.store_task_route()
+        selected = self.task_route_key
         old = getattr(self, 'task_points', None)
         previous = {}
         if old is not None:
@@ -727,6 +736,9 @@ class MainWindow(QMainWindow):
                         # remaining valid cell coordinates during resize.
                         continue
         rows, columns = self.task_rows.value(), self.task_columns.value()
+        self.task_routes = {key: route for key, route in self.task_routes.items()
+                            if key[0] < rows and key[1] < columns}
+        self.task_route_key = None
         self.task_points.blockSignals(True)
         self.task_points.setRowCount(rows*columns)
         for row in range(rows):
@@ -739,8 +751,32 @@ class MainWindow(QMainWindow):
                     if cell_column < 2:
                         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     self.task_points.setItem(index, cell_column, item)
+        selected = selected if selected in self.task_routes else (0, 0)
+        self.task_points.setCurrentCell(selected[0]*columns+selected[1], 2)
         self.task_points.blockSignals(False)
+        self.task_part_selected()
         self.task_changed()
+
+    def store_task_route(self):
+        """Preserve even incomplete text edits when switching between parts."""
+        if self.task_route_key is not None:
+            self.task_routes[self.task_route_key] = [
+                [self.task_waypoints.item(row, column).text() for column in range(6)]
+                for row in range(self.task_waypoints.rowCount())]
+
+    def task_part_selected(self, *_):
+        self.store_task_route()
+        row = self.task_points.currentRow()
+        self.task_route_key = (row // self.task_columns.value(), row % self.task_columns.value()) if row >= 0 else None
+        self.task_waypoints.blockSignals(True)
+        self.task_waypoints.setRowCount(0)
+        for pose in self.task_routes.get(self.task_route_key, []):
+            index = self.task_waypoints.rowCount()
+            self.task_waypoints.insertRow(index)
+            for column, value in enumerate(pose):
+                self.task_waypoints.setItem(index, column, QTableWidgetItem(str(value)))
+        self.task_waypoints.blockSignals(False)
+        self.refresh()
 
     def task_point_values(self):
         return [[float(self.task_points.item(row, column).text()) for column in (2, 3, 4)]
@@ -751,6 +787,8 @@ class MainWindow(QMainWindow):
                 for row in range(self.task_waypoints.rowCount())]
 
     def task_capture_block_reason(self, require_array_row=True, require_calibrated_plane=True):
+        if self.task_running:
+            return 'Finish or cancel the sequence before capturing.'
         if not self.connected:
             return 'Connect before capturing a workpiece point.'
         if self.client.busy:
@@ -800,30 +838,48 @@ class MainWindow(QMainWindow):
                  pose=', '.join(f'{value:.3f}' for value in pose))
 
     def task_data(self):
+        self.store_task_route()
         return dict(rows=self.task_rows.value(), columns=self.task_columns.value(),
                     points=validate_array(self.task_rows.value(), self.task_columns.value(), self.task_point_values()),
                     destination=[widget.value() for widget in self.task_destination],
-                    waypoints=validate_poses(self.task_waypoint_values()))
+                    routes=validate_routes([self.task_routes.get((r, c), [])
+                                            for r in range(self.task_rows.value())
+                                            for c in range(self.task_columns.value())], self.task_points.rowCount()))
 
     def add_task_waypoint(self):
+        reason = self.task_capture_block_reason(require_calibrated_plane=False)
+        if reason:
+            self.log('Waypoint capture blocked: {reason}', reason=reason)
+            return
+        if self.task_waypoints.rowCount() >= 20:
+            self.log('Waypoint capture blocked: {reason}', reason=Message('Too many manual route waypoints'))
+            return
         row = self.task_waypoints.rowCount()
         self.task_waypoints.blockSignals(True)
         self.task_waypoints.insertRow(row)
-        for column, value in enumerate(self.task_destination):
-            self.task_waypoints.setItem(row, column, QTableWidgetItem(f'{value.value():.2f}'))
+        for column, value in enumerate(self.state['tcp']):
+            self.task_waypoints.setItem(row, column, QTableWidgetItem(f'{value:.3f}'))
         self.task_waypoints.blockSignals(False)
         self.task_changed()
+        self.task_waypoints.setCurrentCell(row, 0)
+        self.refresh()
+        self.log('Captured base TCP waypoint {waypoint} for array part {part}.',
+                 waypoint=row+1, part=self.task_points.currentRow()+1)
 
     def remove_task_waypoint(self):
+        if self.task_running or self.client.busy:
+            return
         row = self.task_waypoints.currentRow()
         if row >= 0:
             self.task_waypoints.removeRow(row)
             self.task_changed()
+            self.refresh()
 
     def task_changed(self, *_):
         if not hasattr(self, 'task_review'):
             return
         self.task_ack.setChecked(False)
+        self.store_task_route()
         self.update_task_review()
         if hasattr(self, 'session_dirty'):
             self.schedule_autosave()
@@ -835,8 +891,8 @@ class MainWindow(QMainWindow):
                 self.task_review.setText(self.tr('Select a calibrated base-reference workpiece plane to preview the route.'))
                 return
             data = self.task_data()
-            path = build_trajectory(plane, data['points'], data['destination'], data['waypoints'],
-                                    self.orientation or [0., 0., 0.])
+            path = build_trajectory(plane, data['points'], data['destination'], [],
+                                    self.orientation or [0., 0., 0.], routes=data['routes'])
             lines = [self.tr('{count} source points · {moves} straight MoveL segments · row-major order',
                              count=data['rows']*data['columns'], moves=len(path))]
             lines.extend(f'{index+1:03d}. {self.task_display_name(name)}: '+', '.join(f'{value:.2f}' for value in pose)
@@ -883,7 +939,7 @@ class MainWindow(QMainWindow):
         try:
             data = self.task_data()
             path = build_trajectory(self.current_plane(), data['points'], data['destination'],
-                                    data['waypoints'], self.orientation)
+                                    [], self.orientation, routes=data['routes'])
             previous = self.state['tcp']
             for _, pose in path:
                 target = self.current_plane().from_base(pose[:3])
@@ -901,7 +957,7 @@ class MainWindow(QMainWindow):
             return
         data = self.task_data()
         self.task_path = build_trajectory(self.current_plane(), data['points'], data['destination'],
-                                          data['waypoints'], self.orientation)
+                                          [], self.orientation, routes=data['routes'])
         self.task_index = 0
         self.task_running = True
         self.teach_enabled.setChecked(False)
@@ -1213,6 +1269,15 @@ class MainWindow(QMainWindow):
         destination_capture_reason = self.task_capture_block_reason(require_array_row=False, require_calibrated_plane=False)
         self.task_destination_capture.setEnabled(destination_capture_reason is None and not self.task_running)
         self.task_destination_capture.setToolTip(self.tr(destination_capture_reason) if destination_capture_reason else '')
+        waypoint_reason = self.task_capture_block_reason(require_calibrated_plane=False)
+        self.task_add_waypoint.setEnabled(waypoint_reason is None and self.task_waypoints.rowCount() < 20)
+        self.task_add_waypoint.setToolTip(self.tr(waypoint_reason) if waypoint_reason else '')
+        self.task_remove_waypoint.setEnabled(not self.client.busy and not self.task_running and self.task_waypoints.currentRow() >= 0)
+        key = self.task_route_key
+        self.task_route_label.setText(self.tr('Transit route for part {part} · row {row}, column {column}',
+                                            part=key[0]*self.task_columns.value()+key[1]+1,
+                                            row=key[0]+1, column=key[1]+1) if key is not None
+                                      else self.tr('Select an array part to teach its independent transit route.'))
         for widget in (self.task_rows, self.task_columns, self.task_points, *self.task_destination,
                        self.task_waypoints, self.task_ack):
             widget.setEnabled(not self.client.busy and not self.task_running)
@@ -1680,14 +1745,11 @@ class MainWindow(QMainWindow):
             self.task_points.blockSignals(False)
             for widget, value in zip(self.task_destination, task['destination']):
                 widget.setValue(value)
-            self.task_waypoints.blockSignals(True)
-            self.task_waypoints.setRowCount(0)
-            for pose in task['waypoints']:
-                row = self.task_waypoints.rowCount()
-                self.task_waypoints.insertRow(row)
-                for column, value in enumerate(pose):
-                    self.task_waypoints.setItem(row, column, QTableWidgetItem(f'{value:.2f}'))
-            self.task_waypoints.blockSignals(False)
+            self.task_routes = {(r, c): task['routes'][r*task['columns']+c]
+                                for r in range(task['rows']) for c in range(task['columns'])}
+            self.task_route_key = None  # discard the old displayed route before restoring
+            self.task_points.setCurrentCell(0, 2)
+            self.task_part_selected()
             self.task_ack.setChecked(False)
             for widget, value in zip(self.targets, xyz['targets']):
                 widget.setValue(value)

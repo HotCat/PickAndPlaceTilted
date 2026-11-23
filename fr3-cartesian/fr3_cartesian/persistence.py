@@ -8,7 +8,7 @@ from PySide6.QtCore import QIODevice, QSaveFile
 
 from .geometry import Plane, calibrate_pivot, vector
 from .messages import OperatorValueError
-from .tasks import validate_array, validate_poses
+from .tasks import validate_array, validate_poses, validate_routes
 
 
 def bounded(value, low, high):
@@ -79,6 +79,13 @@ def decode_calibration(data):
     default_points = [[column * 30., row * 30., 0.]
                       for row in range(array_rows) for column in range(array_columns)]
     array_points = validate_array(array_rows, array_columns, task.get('points', default_points))
+    if 'routes' in task:
+        routes = validate_routes(task['routes'], len(array_points))
+    else:
+        # Old sessions used one shared route. Make independent copies so edits
+        # to one part cannot silently change the routes of the other parts.
+        shared = validate_poses(task.get('waypoints', []))
+        routes = [[list(pose) for pose in shared] for _ in array_points]
     destination = vector(task.get('destination', [300., 0., 200., 180., 0., 0.]), 6).tolist()
     if any(abs(value) > 2000 for value in destination[:3]):
         raise OperatorValueError('Invalid saved calibration setting')
@@ -105,7 +112,7 @@ def decode_calibration(data):
                  rotation_limit=bounded(jog.get('rotation_limit', 1), .1, 10)),
         task=dict(rows=array_rows, columns=array_columns, points=array_points,
                   destination=destination,
-                  waypoints=validate_poses(task.get('waypoints', []))),
+                  routes=routes),
     )
 
 

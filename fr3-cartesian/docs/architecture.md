@@ -200,9 +200,10 @@ separate production plan for acceptance milestones.
 `tasks.py` is a pure helper: it maps each row-major plane XYZ source through the
 saved plane transform to base, gives it the current explicitly locked orientation,
 and emits named, absolute base TCP poses. A fixed six-axis base destination and an
-operator-authored route list define the transfer. The same route list is reversed
-between the destination and the following source. It adds no hidden lift, gripper
-state, vision correction or collision planner.
+independent operator-authored route for every array cell define the transfer. The
+next cell's route is reversed between the destination and that following source.
+Legacy sessions with one shared route are migrated to independent copies. It adds
+no hidden lift, gripper state, vision correction or collision planner.
 
 The UI review gate checks each consecutive segment against the same workplane TCP
 limits, current start pose and 100 mm per-segment `MoveL` cap. Each target then goes

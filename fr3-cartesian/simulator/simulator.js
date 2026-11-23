@@ -118,13 +118,15 @@ function makePath(data){
   const points=task.points||Array.from({length:rows*cols},(_,i)=>[i%cols*30,Math.floor(i/cols)*30,0]);
   const orientation=data.xyz?.orientation_reference||[180,0,0];
   const dest=task.destination||[350,0,300,...orientation];
-  const waypoints=task.waypoints||[];
+  // Legacy shared routes are copied per source, matching the Studio migration.
+  const routes=task.routes||points.map(()=>task.waypoints||[]);
+  if(routes.length!==points.length)throw Error('Each array part must have its own waypoint list.');
   const path=[];
   points.forEach((point,i)=>{
     path.push({name:`Pick ${i+1}`,pose:[...xyzToBase(plane,point),...orientation]});
-    waypoints.forEach((p,j)=>path.push({name:`Route ${i+1}.${j+1}`,pose:p}));
+    routes[i].forEach((p,j)=>path.push({name:`Route ${i+1}.${j+1}`,pose:p}));
     path.push({name:`Place ${i+1}`,pose:dest});
-    if(i<points.length-1)[...waypoints].reverse().forEach((p,j)=>path.push({name:`Return ${i+1}.${j+1}`,pose:p}));
+    if(i<points.length-1)[...routes[i+1]].reverse().forEach((p,j)=>path.push({name:`Return ${i+1}.${j+1}`,pose:p}));
   });
   return {plane,path,rows,cols,points};
 }

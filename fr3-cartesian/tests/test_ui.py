@@ -663,3 +663,80 @@ def test_calibration_file_dialogs_use_dark_theme(tmp_path):
     finally:
         window.close()
         app.processEvents()
+
+
+@pytest.mark.parametrize('language', ['en', 'zh_CN'])
+def test_capture_independent_transit_routes_switch_resize_and_restore(tmp_path, language):
+    from fr3_cartesian.worker import Session
+    from fr3_cartesian.persistence import read_calibration
+    app = QApplication.instance() or QApplication([])
+    path = tmp_path/'route-session.json'
+    window = MainWindow(settings=QSettings(str(tmp_path/'route-ui.ini'), QSettings.IniFormat),
+                        session_path=path, language=language)
+    pose_a = [301.123, 32.456, 220.789, 180, 0, 0]
+    pose_b = [350, 40, 230, 180, 0, 0]
+    try:
+        window.connected = True
+        window.tool_applied = True
+        window.state = Session().read()
+        window.state.update(tcp=pose_a, user=0)
+        window.state_time = time.monotonic()
+        window.refresh()
+        assert window.task_add_waypoint.isEnabled()
+        window.task_add_waypoint.click()
+        assert window.task_waypoint_values() == [pose_a]
+        assert window.task_data()['routes'][0] == [pose_a]
+        assert window.task_data()['routes'][1] == []
+        window.task_points.setCurrentCell(1, 2)
+        assert window.task_waypoints.rowCount() == 0
+        window.state['tcp'] = pose_b
+        window.task_add_waypoint.click()
+        window.task_waypoints.item(0, 0).setText('351.125')
+        expected_b = [351.125, *pose_b[1:]]
+        window.task_points.setCurrentCell(0, 2)
+        assert window.task_waypoint_values() == [pose_a]
+        window.task_columns.setValue(3)
+        assert window.task_data()['routes'][:3] == [[pose_a], [expected_b], []]
+        window.task_points.setCurrentCell(1, 2)
+        assert window.task_waypoint_values() == [expected_b]
+        # An uncompleted edit is retained across selection, and cannot be saved
+        # or executed until it becomes a finite six-axis pose again.
+        window.task_waypoints.item(0, 0).setText('-')
+        window.task_points.setCurrentCell(0, 2)
+        window.task_points.setCurrentCell(1, 2)
+        assert window.task_waypoints.item(0, 0).text() == '-'
+        window.task_waypoints.item(0, 0).setText(str(expected_b[0]))
+        window.schedule_autosave()
+        window.autosave()
+        saved = read_calibration(path)
+        assert saved['task']['routes'][:3] == [[pose_a], [expected_b], []]
+        window.restore_calibration(saved)
+        window.task_points.setCurrentCell(1, 2)
+        assert window.task_waypoint_values() == [expected_b]
+        window.task_points.setCurrentCell(0, 2)
+        assert window.task_waypoint_values() == [pose_a]
+    finally:
+        window.connected = False
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize('state_change', [dict(stopped=False), dict(program_stopped=False),
+                                          dict(user=1), dict(safe=False), dict(errors=[1, 2])])
+def test_waypoint_capture_rejects_unsafe_or_nonbase_feedback(tmp_path, state_change):
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'blocked-route.ini'), QSettings.IniFormat))
+    try:
+        window.connected = True
+        window.tool_applied = True
+        window.state = Session().read()
+        window.state.update(state_change)
+        window.state_time = time.monotonic()
+        window.add_task_waypoint()
+        assert window.task_waypoints.rowCount() == 0
+        assert 'Waypoint capture blocked' in window.messages.toPlainText()
+    finally:
+        window.connected = False
+        window.close()
+        app.processEvents()

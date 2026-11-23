@@ -160,7 +160,7 @@ def test_static_array_recipe_defaults_migrates_and_roundtrips(document, tmp_path
     assert decoded['task']['rows'] == 3 and decoded['task']['columns'] == 2
     assert decoded['task']['points'] == [[0, 0, 0], [30, 0, 0], [0, 30, 0],
                                          [30, 30, 0], [0, 60, 0], [30, 60, 0]]
-    assert decoded['task']['waypoints'] == []
+    assert decoded['task']['routes'] == [[] for _ in range(6)]
     document['task'] = dict(rows=2, columns=2,
         points=[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
         destination=[200, 300, 400, 180, 0, 10],
@@ -168,7 +168,14 @@ def test_static_array_recipe_defaults_migrates_and_roundtrips(document, tmp_path
     path = tmp_path/'task-calibration.json'
     write_calibration(path, document)
     restored = read_calibration(path)
-    assert restored['task'] == document['task']
+    assert restored['task']['routes'] == [document['task']['waypoints'] for _ in range(4)]
+    assert restored['task']['routes'][0] is not restored['task']['routes'][1]
+    assert restored['task']['routes'][0][0] is not restored['task']['routes'][1][0]
+    document['task'].pop('waypoints')
+    document['task']['routes'] = restored['task']['routes']
+    document['task']['routes'][1].append([180, 270, 390, 180, 0, 10])
+    write_calibration(path, document)
+    assert read_calibration(path)['task'] == document['task']
 
 
 @pytest.mark.parametrize('task', [
@@ -177,6 +184,9 @@ def test_static_array_recipe_defaults_migrates_and_roundtrips(document, tmp_path
     dict(rows=1, columns=1, points=[[float('nan'), 0, 0]]),
     dict(rows=1, columns=1, points=[[0, 0, 0]], destination=[3000, 0, 0, 0, 0, 0]),
     dict(rows=1, columns=1, points=[[0, 0, 0]], waypoints=[[0, 0, 0]]*21),
+    dict(rows=1, columns=2, points=[[0, 0, 0]]*2, routes=[[]]),
+    dict(rows=1, columns=1, points=[[0, 0, 0]], routes=[[[float('nan'), 0, 0, 0, 0, 0]]]),
+    dict(rows=1, columns=1, points=[[0, 0, 0]], routes=[[[0, 0, 0, 0, 0, 0]]*21]),
 ])
 def test_invalid_static_array_recipe_is_rejected(document, task):
     document['task'] = task

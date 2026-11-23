@@ -34,6 +34,23 @@ def test_single_part_has_no_unneeded_return_segment(plane):
     assert [name for name, _ in path] == ['Pick 1', 'Route 1.1', 'Place 1']
 
 
+def test_independent_routes_return_along_next_parts_route(plane):
+    destination = [350, 400, 500, 180, 0, 0]
+    a = [180, 200, 380, 180, 0, 0]
+    b = [240, 260, 390, 180, 0, 0]
+    c = [300, 340, 450, 180, 0, 0]
+    path = build_trajectory(plane, [[0, 0, 0], [30, 0, 0], [60, 0, 0]], destination,
+                            [], [180, 0, 0], routes=[[a], [b, c], []])
+    assert [name for name, _ in path] == [
+        'Pick 1', 'Route 1.1', 'Place 1', 'Return 1.1', 'Return 1.2',
+        'Pick 2', 'Route 2.1', 'Route 2.2', 'Place 2', 'Pick 3', 'Place 3']
+    assert path[1][1] == a
+    assert [pose for _, pose in path[3:5]] == [c, b]
+    assert [pose for _, pose in path[6:8]] == [b, c]
+    with pytest.raises(ValueError, match='own waypoint list'):
+        build_trajectory(plane, [[0, 0, 0]], destination, [], [180, 0, 0], routes=[])
+
+
 @pytest.mark.parametrize('rows,columns,points', [
     (0, 2, [[0, 0, 0]]*2), (11, 1, [[0, 0, 0]]*11),
     (2, 2, [[0, 0, 0]]*3), (1, 1, [[0, 0, float('nan')]]),

@@ -2,10 +2,10 @@
 
 The array stores tool-centre-point positions in a taught plane; it stores no
 vision measurements or controller state. Each transit waypoint and the fixed
-destination is a full TCP pose in robot base. Reversing the transit list gives
-the deliberately simple return path from the place point to the next pick point.
+destination is a full TCP pose in robot base. Each part has an outbound transit
+list; reversing the next part's list gives its inbound path from the destination.
 """
-from .geometry import Plane, vector
+from .geometry import vector
 from .messages import OperatorValueError
 
 
@@ -31,12 +31,20 @@ def validate_poses(poses, maximum=20):
     return result
 
 
-def build_trajectory(plane, points, destination, waypoints, source_orientation):
+def validate_routes(routes, count):
+    """Require one independent outbound route per source in row-major order."""
+    if len(routes) != count:
+        raise OperatorValueError('Each array part must have its own waypoint list')
+    return [validate_poses(route) for route in routes]
+
+
+def build_trajectory(plane, points, destination, waypoints, source_orientation, *, routes=None):
     """Return named absolute base TCP poses in the operator's execution order.
 
     For every array point: approach that source, visit the manually planned
-    outbound route, visit the fixed destination, retrace the route in reverse,
-    then approach the next source. The final part ends at the destination.
+    outbound route, visit the fixed destination, then follow the NEXT source's
+    outbound route in reverse to approach that next source. The final part ends
+    at the destination. Legacy shared waypoints are accepted for older callers.
     Source positions inherit the caller's locked TCP orientation.
     """
     sources = [vector(p, 3).tolist() for p in points]
@@ -48,13 +56,16 @@ def build_trajectory(plane, points, destination, waypoints, source_orientation):
     if any(abs(value) > 2000 for value in target[:3]):
         raise OperatorValueError('Base TCP coordinates must be between −2000 and 2000 mm')
     source_attitude = vector(source_orientation, 3).tolist()
-    transit = validate_poses(waypoints)
+    if routes is None:
+        shared = validate_poses(waypoints)
+        routes = [[list(pose) for pose in shared] for _ in sources]
+    transit_routes = validate_routes(routes, len(sources))
     path = []
     for index, source in enumerate(sources):
         path.append((f'Pick {index + 1}', [*plane.to_base(source), *source_attitude]))
-        path.extend((f'Route {index + 1}.{point + 1}', pose) for point, pose in enumerate(transit))
+        path.extend((f'Route {index + 1}.{point + 1}', pose) for point, pose in enumerate(transit_routes[index]))
         path.append((f'Place {index + 1}', target))
         if index + 1 < len(sources):
             path.extend((f'Return {index + 1}.{point + 1}', pose)
-                        for point, pose in enumerate(reversed(transit)))
+                        for point, pose in enumerate(reversed(transit_routes[index + 1])))
     return path
