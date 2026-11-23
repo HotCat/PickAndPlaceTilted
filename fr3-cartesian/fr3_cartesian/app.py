@@ -1717,8 +1717,10 @@ class MainWindow(QMainWindow):
             self.log('Cannot restore saved calibration: {reason}', reason=error_message(exc))
 
     def save(self):
-        path, _ = QFileDialog.getSaveFileName(self, self.tr('Save calibration'), str(ROOT/'calibration.json'),
-                                             'JSON (*.json)', options=QFileDialog.DontUseNativeDialog)
+        dialog = self.calibration_file_dialog(QFileDialog.AcceptSave, str(ROOT/'calibration.json'))
+        if dialog.exec() != QFileDialog.Accepted:
+            return
+        path = dialog.selectedFiles()[0] if dialog.selectedFiles() else ''
         if path:
             try:
                 write_calibration(path, self.calibration_document())
@@ -1730,10 +1732,10 @@ class MainWindow(QMainWindow):
         if self.client.busy or self.arm.isChecked():
             self.log('Finish motion and disable Cartesian controls before loading')
             return
-        path, _ = QFileDialog.getOpenFileName(self, self.tr('Load calibration'), str(ROOT),
-                                             'JSON (*.json)', options=QFileDialog.DontUseNativeDialog)
-        if not path:
+        dialog = self.calibration_file_dialog(QFileDialog.AcceptOpen, str(ROOT))
+        if dialog.exec() != QFileDialog.Accepted or not dialog.selectedFiles():
             return
+        path = dialog.selectedFiles()[0]
         try:
             self.restore_calibration(read_calibration(path))
             self.schedule_autosave()
@@ -1742,6 +1744,30 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
             self.log('Cannot load calibration: {reason}', reason=error_message(exc))
         self.refresh()
+
+    def calibration_file_dialog(self, accept_mode, initial_path):
+        """Build a non-native file dialog that inherits the Studio dark theme."""
+        dialog = QFileDialog(self, self.tr('Save calibration' if accept_mode == QFileDialog.AcceptSave else 'Load calibration'))
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        dialog.setAcceptMode(accept_mode)
+        dialog.setNameFilter('JSON (*.json)')
+        if accept_mode == QFileDialog.AcceptOpen:
+            dialog.setFileMode(QFileDialog.ExistingFile)
+        else:
+            dialog.setFileMode(QFileDialog.AnyFile)
+            dialog.setDefaultSuffix('json')
+        dialog.setStyleSheet(self.styleSheet() + '''
+            QFileDialog, QFileDialog QWidget { background: #101820; color: #e5ecf0; }
+            QFileDialog QListView, QFileDialog QTreeView, QFileDialog QTableView { background: #182732; color: #e5ecf0; alternate-background-color: #1e303b; selection-background-color: #287968; selection-color: #ffffff; }
+            QFileDialog QHeaderView::section { background: #223440; color: #89cfeb; border: 1px solid #344955; padding: 5px; }
+            QFileDialog QLineEdit, QFileDialog QComboBox { background: #182732; color: #e5ecf0; border: 1px solid #39515f; padding: 4px; }
+            QFileDialog QToolButton, QFileDialog QPushButton { background: #263d4a; color: #e5ecf0; border: 1px solid #405b68; padding: 6px; }
+            QFileDialog QToolButton:hover, QFileDialog QPushButton:hover { background: #365766; }
+        ''')
+        dialog.setDirectory(str(Path(initial_path).parent if Path(initial_path).suffix else initial_path))
+        if Path(initial_path).suffix:
+            dialog.selectFile(str(initial_path))
+        return dialog
 
     def event(self, event):
         if event.type() == QEvent.WindowDeactivate and hasattr(self, 'arm'):

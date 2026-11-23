@@ -8,7 +8,7 @@ from dataclasses import asdict
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QSettings, Qt
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QFileDialog, QScrollArea
 from PySide6.QtTest import QTest
 from fr3_cartesian.app import MainWindow
 from fr3_cartesian.geometry import Plane
@@ -644,5 +644,22 @@ def test_capture_live_tcp_teaches_fixed_destination_in_robot_base(tmp_path):
         assert 'Captured current TCP as fixed base destination' in window.messages.toPlainText()
     finally:
         window.connected = False
+        window.close()
+        app.processEvents()
+
+
+def test_calibration_file_dialogs_use_dark_theme(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'file-dialog-theme.ini'), QSettings.IniFormat))
+    try:
+        for mode, initial in ((QFileDialog.AcceptSave, tmp_path/'calibration.json'),
+                              (QFileDialog.AcceptOpen, tmp_path)):
+            dialog = window.calibration_file_dialog(mode, str(initial))
+            assert dialog.testOption(QFileDialog.DontUseNativeDialog)
+            assert '#101820' in dialog.styleSheet()
+            assert '#182732' in dialog.styleSheet()
+            assert dialog.nameFilters() == ['JSON (*.json)']
+            dialog.close()
+    finally:
         window.close()
         app.processEvents()
