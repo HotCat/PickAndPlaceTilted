@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FR3 Pick and Place Simulator</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {"imports":{"three":"./vendor/three.module.js","three/addons/controls/OrbitControls.js":"./vendor/OrbitControls.js","three/addons/loaders/STLLoader.js":"./vendor/STLLoader.js"}}
+  </script>
+</head>
+<body>
+  <header>
+    <div><div class="eyebrow">FAIRINO FR3 · LOCAL VISUAL SIMULATOR</div><h1>Pick and place route preview</h1></div>
+    <div class="badge">VISUAL ONLY · NO ROBOT CONNECTION</div>
+  </header>
+  <main>
+    <section class="viewport"><div id="view"></div><div class="legend"><span><i class="blue"></i>Workpiece plane</span><span><i class="orange"></i>Robot TCP path</span><span><i class="green"></i>Pick array</span></div><div id="loading">Loading FR3 v6 model…</div></section>
+    <aside>
+      <section class="card"><h2>Recipe</h2><p>Import the saved <code>calibration-session.json</code> from FR3 / Cartesian Studio, or preview the built-in example.</p><label class="file">Import calibration JSON<input id="file" type="file" accept="application/json,.json"></label><button id="demo" class="subtle">Load 3 × 2 example</button><div id="recipeInfo" class="muted"></div></section>
+      <section class="card"><h2>Sequence</h2><div id="sequence" class="sequence"></div></section>
+      <section class="card controls"><h2>Playback</h2><div class="buttons"><button id="start" class="primary">▶ Start</button><button id="pause">Ⅱ Pause</button><button id="reset">↺ Reset</button></div><label class="range">Simulation rate <span id="rateValue">1.0×</span><input id="rate" type="range" min="0.25" max="2.5" step="0.05" value="1"></label><label class="range">TCP travel speed <span id="speedValue">80 mm/s</span><input id="speed" type="range" min="20" max="250" step="5" value="80"></label><div id="status" class="status">Ready. Drag to orbit; scroll to zoom.</div></section>
+      <section class="card note"><h2>Model and motion</h2><p>Uses FAIRINO’s FR3 v6 visual STL meshes and URDF link dimensions. Joint motion is solved in the browser to follow the listed TCP waypoints; this is an illustrative preview, not a certified robot digital twin or collision planner.</p></section>
+    </aside>
+  </main>
+  <script type="module" src="simulator.js?v=3"></script>
+</body>
+</html>

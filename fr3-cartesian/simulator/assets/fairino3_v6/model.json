@@ -1,0 +1,154 @@
+{
+  "links": [
+    {
+      "name": "base_link",
+      "mesh": "base_link.STL"
+    },
+    {
+      "name": "shoulder_link",
+      "mesh": "shoulder_link.STL"
+    },
+    {
+      "name": "upperarm_link",
+      "mesh": "upperarm_link.STL"
+    },
+    {
+      "name": "forearm_link",
+      "mesh": "forearm_link.STL"
+    },
+    {
+      "name": "wrist1_link",
+      "mesh": "wrist1_link.STL"
+    },
+    {
+      "name": "wrist2_link",
+      "mesh": "wrist2_link.STL"
+    },
+    {
+      "name": "wrist3_link",
+      "mesh": "wrist3_link.STL"
+    }
+  ],
+  "joints": [
+    {
+      "name": "j1",
+      "parent": "base_link",
+      "child": "shoulder_link",
+      "xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "j2",
+      "parent": "shoulder_link",
+      "child": "upperarm_link",
+      "xyz": [
+        0.0,
+        0.0,
+        140.0
+      ],
+      "rpy": [
+        1.5708,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "j3",
+      "parent": "upperarm_link",
+      "child": "forearm_link",
+      "xyz": [
+        -280.0,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "j4",
+      "parent": "forearm_link",
+      "child": "wrist1_link",
+      "xyz": [
+        -240.01,
+        0.0,
+        0.0
+      ],
+      "rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "j5",
+      "parent": "wrist1_link",
+      "child": "wrist2_link",
+      "xyz": [
+        0.0,
+        0.0,
+        102.0
+      ],
+      "rpy": [
+        1.5708,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "j6",
+      "parent": "wrist2_link",
+      "child": "wrist3_link",
+      "xyz": [
+        0.0,
+        0.0,
+        102.0
+      ],
+      "rpy": [
+        -1.5708,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ]
+}

@@ -190,3 +190,16 @@ Ubuntu 上应明确使用系统 Python 创建环境，避免 Anaconda 的桌面�
 ## 仓库内容与本机数据
 
 仓库仅包含源码、文档、测试和依赖版本。`vendor/` 中的原始官方 SDK 由安装器下载并校验 SHA-256；虚拟环境、标定会话、旧标定、HID 配置及本机诊断文件均不提交。请单独备份实际标定，再通过 **加载标定…** 主动导入。测试使用人工构造的输入，不需要现场测量数据。`pendant.py`、`joystick.py` 和 `velocity.py` 作为历史实验保留，当前操作界面不会加载或启用它们。
+
+### Three.js FR3 可视化模拟器
+
+可选的浏览器预览位于 `simulator/`。它使用 FAIRINO FR3 v6 STL 连杆模型和 URDF 关节原点，支持载入 Studio 的 `calibration-session.json` 并播放已保存的静态取放路径。在项目目录中启动：
+
+```bash
+cd simulator
+python3 -m http.server 8765
+```
+
+然后在 Chrome 打开 `http://localhost:8765`。导入正在使用的 Studio 会话文件 `../calibration-session.json`，或载入内置的 3 × 2 示例。此预览仅在浏览器中运行，不连接机器人 SDK。阻尼数值逆运动学仅用于直观查看路径，不能验证可达性、碰撞、动力学或控制器运动。
+
+FR3 v6 STL 和 URDF 模型来自 [FAIR-INNOVATION/frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2/tree/main/fairino_description)。该仓库的 `fairino_description/package.xml` 当前将许可证标记为 `TODO`；重新分发模型资产前请确认上游授权条款。

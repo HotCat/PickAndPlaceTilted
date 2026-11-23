@@ -193,3 +193,16 @@ Error definitions: [SDK error table](https://github.com/FAIR-INNOVATION/FAIR-doc
 ## Repository contents
 
 Only source, documentation, tests and dependency pins are tracked. The SDK installer downloads the unmodified vendor module with a SHA-256 check; `vendor/` remains ignored. Virtual environments, calibration sessions, legacy cell calibration, HID profiles and local diagnostics are excluded. Back up existing cell measurements separately and use **Load calibration…** to import them deliberately. Test inputs are synthetic; no commissioning data is required to run the suite. The retained `pendant.py`, `joystick.py` and `velocity.py` modules are historical experiments, not an enabled operator interface.
+
+### Three.js FR3 visual simulator
+
+The optional browser preview is in `simulator/`. It renders FAIRINO's FR3 v6 STL links and the corresponding URDF joint origins, accepts the Studio `calibration-session.json`, and animates the saved static pick/place route. Start it from the project directory:
+
+```bash
+cd simulator
+python3 -m http.server 8765
+```
+
+Open `http://localhost:8765` in Chrome. Import `../calibration-session.json` from the running Studio session (or load the built-in 3 × 2 example). The preview is browser-local and has no robot SDK connection. Its damped numerical inverse-kinematics visualization is for route intuition only; it does not certify reachability, collisions, dynamics, or controller motion.
+
+The FR3 v6 STL and URDF assets are copied from [FAIR-INNOVATION/frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2/tree/main/fairino_description). That repository's `fairino_description/package.xml` currently declares its license as `TODO`; verify the upstream licensing terms before redistributing these model assets.
