@@ -509,5 +509,6 @@
   "A transit spline needs at least one taught point and a final pick/place point": "中转样条路径至少需要一个示教路点和一个取/放料终点",
   "Teach every part position in the selected workpiece plane. Set one fixed destination in robot-base TCP coordinates, then add base TCP transit points that guide a controller arc-transition spline. Pick and place endpoints stop exactly; transit points are shaping guides, not stop points. Keep adjacent reviewed poses within 100 mm. No vision, gripper, collision planner, or automatic approach/retract is included.": "在所选工件平面中示教每个零件位置，并在机器人基坐标 TCP 中设置固定目的地。添加基坐标 TCP 中转点以引导控制器圆弧过渡样条运动。取料和放料端点精确停止；中转点用于塑形，不会停止。相邻审核位姿保持在 100 mm 以内。本原型不含视觉、夹爪、碰撞规划或自动接近/撤回。",
   "I reviewed each pick/place stop, transit spline guide, travel bound and destination": "我已检查每个取放停止点、中转样条引导点、行程限位和目的地",
-  "{count} source points · {moves} reviewed path poses · spline transit between exact-stop picks/places · row-major order": "{count} 个取料点 · {moves} 个已审核路径位姿 · 精确停止的取放点之间采用样条中转 · 按行优先顺序"
+  "{count} source points · {moves} reviewed path poses · spline transit between exact-stop picks/places · row-major order": "{count} 个取料点 · {moves} 个已审核路径位姿 · 精确停止的取放点之间采用样条中转 · 按行优先顺序",
+  "Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded). Review/reset the controller alarm in WebUI, reduce the Cartesian speed percentage, and inspect route spacing and wrist rotation before retrying.": "控制器拒绝了中转样条运动（FAIRINO 错误 14：笛卡尔空间指令速度超限）。请在 WebUI 中检查并复位控制器报警，降低笛卡尔速度百分比，并在重试前检查路点间距和腕部旋转。"
 }

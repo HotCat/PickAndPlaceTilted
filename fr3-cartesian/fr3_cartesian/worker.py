@@ -675,10 +675,17 @@ class Session:
             joints = vector(check(self.robot.GetInverseKin(0, pose), 'GetInverseKin'), 6).tolist()
             last = index == len(checked)-1
             result = self.robot.NewSplinePoint(
-                pose, self.slot, 0, int(last), joint_pos=joints, vel=speed,
-                acc=0, ovl=100, blendR=0 if last else blend_radius)
+                pose, self.slot, 0, int(last), joint_pos=joints,
+                # FAIRINO documents spline vel/acc as not open; leave both at
+                # their supported defaults. Apply the UI's conservative speed
+                # percentage through the documented spline override instead.
+                vel=0, acc=0, ovl=speed, blendR=0 if last else blend_radius)
             check(result, 'NewSplinePoint')
-        check(self.robot.NewSplineEnd(), 'NewSplineEnd')
+        result = self.robot.NewSplineEnd()
+        code = result[0] if isinstance(result, (list, tuple)) else result
+        if code == 14:
+            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded). Review/reset the controller alarm in WebUI, reduce the Cartesian speed percentage, and inspect route spacing and wrist rotation before retrying.')
+        check(result, 'NewSplineEnd')
 
         deadline = time.monotonic()+60
         while time.monotonic() < deadline:

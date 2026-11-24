@@ -334,9 +334,19 @@ def test_spline_batches_transit_guides_and_exact_stop_endpoint():
     points = [call for call in calls if call[0] == 'spline_point']
     assert [call[4] for call in points] == [0, 0, 1]
     assert [call[5]['blendR'] for call in points] == [10, 10, 0]
+    assert [call[5]['vel'] for call in points] == [0, 0, 0]
+    assert [call[5]['ovl'] for call in points] == [3, 3, 3]
     assert all(call[2:4] == (1, 0) for call in points)
     assert calls[-1] == ('spline_end',)
     assert calls.count(('spline_end',)) == 1
+
+
+def test_spline_end_code_14_explains_controller_speed_alarm():
+    session, plane, state, calls = fake_plane_move()
+    session.robot.NewSplineEnd = lambda: 14
+    poses = [[320, 0, 210, 180, 0, 0]]
+    with pytest.raises(OperatorError, match='Cartesian instruction speed exceeded'):
+        session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3)
 
 
 def test_simulated_transit_spline_ends_at_taught_place_pose():
