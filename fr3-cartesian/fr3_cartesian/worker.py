@@ -627,13 +627,13 @@ class Session:
             raise OperatorError('Motion did not reach the target within 15 seconds')
         return self.read()
 
-    def move_spline(self, plane, poses, bounds, speed, blend_radius=10.):
-        """Execute one reviewed transit leg as a controller arc-transition spline.
+    def move_blended_route(self, plane, poses, bounds, speed, blend_radius=10.):
+        """Queue transit points with controller corner blending and stop at the end.
 
-        The caller batches only transit shaping points and one exact-stop pick
-        or place endpoint. FAIRINO's NewSplinePoint ``lastFlag`` marks that
-        endpoint; non-final points use a modest blend radius. The controller
-        owns the IK interpolation between the taught TCP poses.
+        Each intermediate MoveL uses FAIRINO's documented nonblocking blend
+        radius. The final pick/place endpoint uses blendR=-1 (blocking exact
+        stop). Adjacent IK solutions are chained to preserve the same joint
+        branch throughout the taught route.
         """
         state = self.ready(motion=True)
         if plane.get('reference') != 'robot_base':
@@ -655,10 +655,10 @@ class Session:
             if not np.allclose(workpiece, 0, atol=.001, rtol=0):
                 raise MoveRejected("Base workpiece 0 has a nonzero offset. Click “Use base workpiece 0” before moving.")
         if not isinstance(poses, list) or not poses:
-            raise OperatorValueError('A transit spline needs at least one taught point and a final pick/place point')
+            raise OperatorValueError('A blended route needs at least one taught point and a final pick/place point')
         blend_radius = float(blend_radius)
         if not np.isfinite(blend_radius) or not 0 <= blend_radius <= 25:
-            raise OperatorValueError('Transit spline blend radius must be between 0 and 25 mm')
+            raise OperatorValueError('Transit blend radius must be between 0 and 25 mm')
         checked, previous = [], state['tcp']
         for pose in poses:
             target_pose = checked_sequence_target(previous, pose)
@@ -680,61 +680,37 @@ class Session:
                                   'GetInverseKinRef'), 6).tolist()
             planned_joints.append(joints)
             reference_joints = joints
-        # Do not open a controller spline context until every waypoint has a
-        # validated, branch-continuous IK solution.
-        restore_speed = max(1, min(10, int(round(speed))))
-        # FAIRINO's own NewSpline example applies SetSpeed(1) before starting
-        # its spline; NewSplinePoint.ovl alone did not limit this controller's
-        # speed validation. Restore the app's selected percentage only after
-        # the spline endpoint is confirmed stationary.
-        check(self.robot.SetSpeed(1), 'SetSpeed(1)')
-        # FAIRINO's public spline example uses 6000 ms. The shorter 2000 ms
-        # default can demand an unrealistically fast transition on short FR3
-        # routes, so use the vendor's slower commissioning value here.
-        check(self.robot.NewSplineStart(0, 6000), 'NewSplineStart')
+        # A short spacing can make a requested radius overlap its neighbours.
+        # Bound each corner radius to one quarter of both adjacent lengths.
+        segment_lengths = [float(np.linalg.norm(np.array(checked[0][:3])-np.array(state['tcp'][:3])))]
+        segment_lengths.extend(float(np.linalg.norm(np.array(b[:3])-np.array(a[:3])))
+                               for a, b in zip(checked, checked[1:]))
         for index, (pose, joints) in enumerate(zip(checked, planned_joints)):
-            last = index == len(checked)-1
-            result = self.robot.NewSplinePoint(
-                pose, self.slot, 0, int(last), joint_pos=joints,
-                # Match FAIRINO's official spline example. SetSpeed(1) above
-                # is the effective commissioning cap; ovl remains the example's
-                # conservative path factor and vel/acc keep its documented
-                # nominal values.
-                vel=100, acc=100, ovl=20,
-                blendR=0 if last else blend_radius)
-            check(result, 'NewSplinePoint')
-        result = self.robot.NewSplineEnd()
-        code = result[0] if isinstance(result, (list, tuple)) else result
-        if code == 14:
-            plan = '; '.join(f'P{index+1} xyz=[{pose[0]:.1f},{pose[1]:.1f},{pose[2]:.1f}] '
-                             f'rpy=[{pose[3]:.1f},{pose[4]:.1f},{pose[5]:.1f}] '
-                             f'joints=[{",".join(f"{value:.1f}" for value in planned_joints[index])}]'
-                             for index, pose in enumerate(checked))
-            restored = False
-            try:
-                check(self.robot.SetSpeed(restore_speed), 'RestoreSpeed')
-                restored = True
-            except Exception:
-                pass
-            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded; effective speed was capped at 1%). Review/reset the controller alarm in WebUI. App speed restore {restored} at {speed}% . Planned poses/continuous IK: {plan}',
-                                restored='confirmed' if restored else 'not confirmed; controller may remain at 1%',
-                                speed=restore_speed, plan=plan)
-        check(result, 'NewSplineEnd')
+            final = index == len(checked)-1
+            if final:
+                corner_radius = -1.  # The pick/place endpoint is an exact stop.
+            else:
+                corner_radius = min(blend_radius, segment_lengths[index]*.25,
+                                    segment_lengths[index+1]*.25)
+            result = self.robot.MoveL(pose, tool=self.slot, user=0, joint_pos=joints,
+                                      vel=speed, ovl=100, blendR=corner_radius,
+                                      offset_flag=0)
+            code = result[0] if isinstance(result, (list, tuple)) else result
+            if code == 74:
+                raise OperatorError('MoveL rejected a blended route point (FAIRINO error 74). Review/reset the controller fault in WebUI.')
+            check(result, 'MoveL blended route')
 
-        deadline = time.monotonic()+60
-        while time.monotonic() < deadline:
-            feedback = self.read()
-            if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
-                raise OperatorError('Controller stopped or faulted during the transit spline; controller speed override remains at 1%')
-            if feedback['stopped']:
-                position_error = float(np.linalg.norm(np.array(feedback['tcp'][:3])-checked[-1][:3]))
-                orientation_error = float(np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(checked[-1][3:])))
-                if position_error <= .02 and orientation_error <= .001:
-                    check(self.robot.SetSpeed(restore_speed), 'RestoreSpeed')
-                    return feedback
-                raise OperatorError('Transit spline stopped before its final pick/place endpoint')
-            time.sleep(.03)
-        raise OperatorError('Transit spline did not reach its final pick/place endpoint within 60 seconds; controller speed override remains at 1%')
+        # The last MoveL is blocking (blendR=-1), so it should return at rest.
+        feedback = self.read()
+        if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
+            raise OperatorError('Controller stopped or faulted during the blended transit route')
+        if not feedback['stopped']:
+            raise OperatorError('Blended transit endpoint returned without stationary feedback')
+        position_error = float(np.linalg.norm(np.array(feedback['tcp'][:3])-checked[-1][:3]))
+        orientation_error = float(np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(checked[-1][3:])))
+        if position_error > .02 or orientation_error > .001:
+            raise OperatorError('Blended transit route stopped before its final pick/place endpoint')
+        return feedback
 
     def demo_pose(self, kind, index):
         if not self.sim:
@@ -772,7 +748,7 @@ def main():
             sys.exit(1)
         return
     session = Session()
-    allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'move_spline', 'demo_pose', 'servo_start', 'servo_end'}
+    allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'move_blended_route', 'demo_pose', 'servo_start', 'servo_end'}
     inbox = CommandInput(sys.stdin.fileno())
     session.move_cancelled = inbox.cancelled
     next_tick, next_state = 0., 0.

@@ -121,16 +121,16 @@ def test_timeout_only_requests_stop_for_an_existing_session(monkeypatch, method,
     assert events[-1].startswith('Connection timed out' if method == 'connect' else 'Controller request timed out')
 
 
-def test_spline_batch_has_time_for_long_reviewed_motion(monkeypatch):
+def test_blended_route_batch_has_time_for_long_reviewed_motion(monkeypatch):
     app, client = bridge()
     actions = []
-    client.pending = (1, 'move_spline', time.monotonic()-30)
+    client.pending = (1, 'move_blended_route', time.monotonic()-30)
     monkeypatch.setattr(client, 'shutdown', lambda: actions.append('shutdown'))
     monkeypatch.setattr(client, 'stop', lambda: actions.append('stop'))
     client.watchdog()
     assert client.pending is not None
     assert not actions
-    client.pending = (1, 'move_spline', time.monotonic()-71)
+    client.pending = (1, 'move_blended_route', time.monotonic()-71)
     client.watchdog()
     assert actions == ['shutdown', 'stop']
 

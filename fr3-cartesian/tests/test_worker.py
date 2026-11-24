@@ -298,26 +298,13 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
     class Robot:
         def GetTCPOffset(self): return 0, [0, 0, 64, 0, 0, 0]
         def GetWObjOffset(self): return 0, [0]*6
-        def SetSpeed(self, speed):
-            calls.append(('set_speed', speed))
-            return 0
         def MoveL(self, pose, **kwargs):
             calls.append((pose, kwargs))
             state['tcp'] = pose
             return sdk_error
-        def NewSplineStart(self, kind, average_time):
-            calls.append(('spline_start', kind, average_time))
-            return 0
         def GetInverseKinRef(self, kind, pose, reference):
             calls.append(('ik_ref', list(pose), list(reference)))
             return (0, [reference[0]+1, *reference[1:]])
-        def NewSplinePoint(self, pose, tool, user, last, **kwargs):
-            calls.append(('spline_point', pose, tool, user, last, kwargs))
-            state['tcp'] = list(pose)
-            return 0
-        def NewSplineEnd(self):
-            calls.append(('spline_end',))
-            return 0
     session = Session()
     session.sim = False
     session.tool = [0, 0, 64, 0, 0, 0]
@@ -328,52 +315,42 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
     return session, plane, state, calls
 
 
-def test_spline_batches_transit_guides_and_exact_stop_endpoint():
+def test_blended_route_uses_move_l_corner_radii_and_exact_stop_endpoint():
     session, plane, state, calls = fake_plane_move()
     guides = [[330, 30, 220, 175, 5, 10], [360, 30, 240, 170, 10, 20]]
     endpoint = [390, 30, 220, 180, 0, 0]
-    result = session.move_spline(asdict(plane), [*guides, endpoint], [[-500, 500]]*3, 3, blend_radius=10)
+    result = session.move_blended_route(asdict(plane), [*guides, endpoint], [[-500, 500]]*3, 3, blend_radius=10)
     assert result['tcp'] == pytest.approx(endpoint)
-    assert calls[[call[0] for call in calls].index('spline_start')] == ('spline_start', 0, 6000)
-    points = [call for call in calls if call[0] == 'spline_point']
+    points = [call for call in calls if isinstance(call[0], list)]
     ik = [call for call in calls if call[0] == 'ik_ref']
     assert [call[2] for call in ik] == [[1, 2, 3, 4, 5, 6], [2, 2, 3, 4, 5, 6], [3, 2, 3, 4, 5, 6]]
-    assert [call[4] for call in points] == [0, 0, 1]
-    assert [call[5]['blendR'] for call in points] == [10, 10, 0]
-    assert [call[5]['vel'] for call in points] == [100, 100, 100]
-    assert [call[5]['acc'] for call in points] == [100, 100, 100]
-    assert [call[5]['ovl'] for call in points] == [20, 20, 20]
-    assert all(call[2:4] == (1, 0) for call in points)
-    assert ('spline_end',) in calls
-    assert calls.index(('set_speed', 1)) < calls.index(('spline_start', 0, 6000))
-    assert calls[-1] == ('set_speed', 3)  # Restored after endpoint confirmation.
-    assert calls.count(('spline_end',)) == 1
+    radii = [call[1]['blendR'] for call in points]
+    assert all(0 < radius <= 10 for radius in radii[:-1])
+    xyz = [np.array([300, 0, 200]), *(np.array(pose[:3]) for pose in [*guides, endpoint])]
+    for index, radius in enumerate(radii[:-1]):
+        assert radius <= .25*min(np.linalg.norm(xyz[index+1]-xyz[index]),
+                                 np.linalg.norm(xyz[index+2]-xyz[index+1]))
+    assert radii[-1] == -1
+    assert [call[1]['vel'] for call in points] == [3, 3, 3]
+    assert [call[1]['ovl'] for call in points] == [100, 100, 100]
+    assert all(call[1]['tool'] == 1 and call[1]['user'] == 0 for call in points)
+    assert [call[1]['joint_pos'][0] for call in points] == [2, 3, 4]
 
 
-def test_spline_end_code_14_explains_controller_speed_alarm():
+def test_blended_route_reports_move_l_controller_error():
     session, plane, state, calls = fake_plane_move()
-    session.robot.NewSplineEnd = lambda: 14
+    session.robot.MoveL = lambda pose, **kwargs: 14
     poses = [[320, 0, 210, 180, 0, 0]]
-    with pytest.raises(OperatorError, match='Cartesian instruction speed exceeded.*effective speed was capped at 1%'):
-        session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3)
-    assert calls[-1] == ('set_speed', 3)  # The rejected path never started; restore the selected speed.
+    with pytest.raises(OperatorError, match='MoveL blended route: FAIRINO error 14'):
+        session.move_blended_route(asdict(plane), poses, [[-500, 500]]*3, 3)
 
 
-def test_spline_fault_keeps_controller_speed_at_one_percent():
-    session, plane, state, calls = fake_plane_move()
-    session.read = lambda: dict(state, safe=False)
-    poses = [[320, 0, 210, 180, 0, 0]]
-    with pytest.raises(OperatorError, match='controller speed override remains at 1%'):
-        session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3)
-    assert ('set_speed', 1) in calls and ('set_speed', 3) not in calls
-
-
-def test_simulated_transit_spline_ends_at_taught_place_pose():
+def test_simulated_blended_transit_ends_at_taught_place_pose():
     session, plane = calibrated_session()
     start = session.read()['tcp']
     via = [(np.array(start[:3])+np.array([20, 10, 5])).tolist()+[175, 5, 10]]
     destination = [(np.array(start[:3])+np.array([40, 20, 0])).tolist()+[180, 0, 0]]
-    state = session.move_spline(asdict(plane), [*via, *destination], [[-500, 500]]*3, 3)
+    state = session.move_blended_route(asdict(plane), [*via, *destination], [[-500, 500]]*3, 3)
     assert state['stopped']
     assert state['tcp'] == pytest.approx(destination[0])
 
@@ -384,10 +361,10 @@ def test_simulated_transit_spline_ends_at_taught_place_pose():
     ([[450, 0, 200, 180, 0, 0]], 10, '100 mm cap'),
     ([[310, 0, 200, 180, 0]], 10, 'Expected 6'),
 ])
-def test_spline_rejects_bad_path_before_controller_commands(poses, blend, match):
+def test_blended_route_rejects_bad_path_before_controller_commands(poses, blend, match):
     session, plane, state, calls = fake_plane_move()
     with pytest.raises(ValueError, match=match):
-        session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3, blend_radius=blend)
+        session.move_blended_route(asdict(plane), poses, [[-500, 500]]*3, 3, blend_radius=blend)
     assert not calls
 
 

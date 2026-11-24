@@ -649,9 +649,9 @@ def test_task_start_explains_geometry_blocker_then_enables_after_route_correctio
         window.close()
 
 
-def test_task_batches_transit_guide_points_into_one_spline_ending_at_place(tmp_path, monkeypatch):
+def test_task_batches_transit_points_into_blended_moves_ending_at_place(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(settings=QSettings(str(tmp_path/'spline-batch.ini'), QSettings.IniFormat))
+    window = MainWindow(settings=QSettings(str(tmp_path/'blended-batch.ini'), QSettings.IniFormat))
     plane = Plane.teach('pick', [[300, 0, 200], [400, 0, 200], [300, 100, 200]])
     requests = []
     monkeypatch.setattr(window.client, 'call', lambda method, args: requests.append((method, args)) or True)
@@ -673,7 +673,7 @@ def test_task_batches_transit_guide_points_into_one_spline_ending_at_place(tmp_p
         window.send_task_segment()
         assert len(requests) == 1
         method, args = requests[0]
-        assert method == 'move_spline'
+        assert method == 'move_blended_route'
         assert args['poses'] == [pose for _, pose in window.task_path[1:]]
         assert args['poses'][-1] == window.task_path[-1][1]
         assert args['blend_radius'] == 10
