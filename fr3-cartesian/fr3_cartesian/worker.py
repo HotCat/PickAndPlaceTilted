@@ -670,9 +670,20 @@ class Session:
             time.sleep(.12)
             return self.read()
 
+        # Solve IK as a chain: each via point uses the preceding solution as
+        # its reference. Solving every point against the same live joints can
+        # switch wrist/elbow branches even when adjacent TCP poses are close.
+        reference_joints = vector(state['joints'], 6).tolist()
+        planned_joints = []
+        for pose in checked:
+            joints = vector(check(self.robot.GetInverseKinRef(0, pose, reference_joints),
+                                  'GetInverseKinRef'), 6).tolist()
+            planned_joints.append(joints)
+            reference_joints = joints
+        # Do not open a controller spline context until every waypoint has a
+        # validated, branch-continuous IK solution.
         check(self.robot.NewSplineStart(0, 2000), 'NewSplineStart')
-        for index, pose in enumerate(checked):
-            joints = vector(check(self.robot.GetInverseKin(0, pose), 'GetInverseKin'), 6).tolist()
+        for index, (pose, joints) in enumerate(zip(checked, planned_joints)):
             last = index == len(checked)-1
             result = self.robot.NewSplinePoint(
                 pose, self.slot, 0, int(last), joint_pos=joints,
@@ -684,7 +695,12 @@ class Session:
         result = self.robot.NewSplineEnd()
         code = result[0] if isinstance(result, (list, tuple)) else result
         if code == 14:
-            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded). Review/reset the controller alarm in WebUI, reduce the Cartesian speed percentage, and inspect route spacing and wrist rotation before retrying.')
+            plan = '; '.join(f'P{index+1} xyz=[{pose[0]:.1f},{pose[1]:.1f},{pose[2]:.1f}] '
+                             f'rpy=[{pose[3]:.1f},{pose[4]:.1f},{pose[5]:.1f}] '
+                             f'joints=[{",".join(f"{value:.1f}" for value in planned_joints[index])}]'
+                             for index, pose in enumerate(checked))
+            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded; override={speed:g}%). Review/reset the controller alarm in WebUI. Planned poses/continuous IK: {plan}',
+                                speed=speed, plan=plan)
         check(result, 'NewSplineEnd')
 
         deadline = time.monotonic()+60

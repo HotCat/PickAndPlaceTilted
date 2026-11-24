@@ -293,7 +293,7 @@ def test_plane_move_is_sent_in_base_with_matching_controller_frame():
 def fake_plane_move(selected_workpiece=0, sdk_error=0):
     plane = Plane.teach('tilted', [[300, 0, 200], [400, 20, 200], [280, 100, 210]])
     state = dict(tcp=[300, 0, 200, 180, 0, 0], tool=1, user=selected_workpiece,
-                 safe=True, errors=[0, 0], enabled=True, stopped=True, program_stopped=True)
+                 joints=[1, 2, 3, 4, 5, 6], safe=True, errors=[0, 0], enabled=True, stopped=True, program_stopped=True)
     calls = []
     class Robot:
         def GetTCPOffset(self): return 0, [0, 0, 64, 0, 0, 0]
@@ -305,8 +305,9 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
         def NewSplineStart(self, kind, average_time):
             calls.append(('spline_start', kind, average_time))
             return 0
-        def GetInverseKin(self, kind, pose):
-            return (0, [1, 2, 3, 4, 5, 6])
+        def GetInverseKinRef(self, kind, pose, reference):
+            calls.append(('ik_ref', list(pose), list(reference)))
+            return (0, [reference[0]+1, *reference[1:]])
         def NewSplinePoint(self, pose, tool, user, last, **kwargs):
             calls.append(('spline_point', pose, tool, user, last, kwargs))
             state['tcp'] = list(pose)
@@ -330,8 +331,10 @@ def test_spline_batches_transit_guides_and_exact_stop_endpoint():
     endpoint = [390, 30, 220, 180, 0, 0]
     result = session.move_spline(asdict(plane), [*guides, endpoint], [[-500, 500]]*3, 3, blend_radius=10)
     assert result['tcp'] == pytest.approx(endpoint)
-    assert calls[0] == ('spline_start', 0, 2000)
+    assert calls[[call[0] for call in calls].index('spline_start')] == ('spline_start', 0, 2000)
     points = [call for call in calls if call[0] == 'spline_point']
+    ik = [call for call in calls if call[0] == 'ik_ref']
+    assert [call[2] for call in ik] == [[1, 2, 3, 4, 5, 6], [2, 2, 3, 4, 5, 6], [3, 2, 3, 4, 5, 6]]
     assert [call[4] for call in points] == [0, 0, 1]
     assert [call[5]['blendR'] for call in points] == [10, 10, 0]
     assert [call[5]['vel'] for call in points] == [0, 0, 0]
@@ -345,7 +348,7 @@ def test_spline_end_code_14_explains_controller_speed_alarm():
     session, plane, state, calls = fake_plane_move()
     session.robot.NewSplineEnd = lambda: 14
     poses = [[320, 0, 210, 180, 0, 0]]
-    with pytest.raises(OperatorError, match='Cartesian instruction speed exceeded'):
+    with pytest.raises(OperatorError, match='Cartesian instruction speed exceeded.*override=3%'):
         session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3)
 
 
