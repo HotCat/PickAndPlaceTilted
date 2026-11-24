@@ -298,6 +298,9 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
     class Robot:
         def GetTCPOffset(self): return 0, [0, 0, 64, 0, 0, 0]
         def GetWObjOffset(self): return 0, [0]*6
+        def SetSpeed(self, speed):
+            calls.append(('set_speed', speed))
+            return 0
         def MoveL(self, pose, **kwargs):
             calls.append((pose, kwargs))
             state['tcp'] = pose
@@ -337,10 +340,13 @@ def test_spline_batches_transit_guides_and_exact_stop_endpoint():
     assert [call[2] for call in ik] == [[1, 2, 3, 4, 5, 6], [2, 2, 3, 4, 5, 6], [3, 2, 3, 4, 5, 6]]
     assert [call[4] for call in points] == [0, 0, 1]
     assert [call[5]['blendR'] for call in points] == [10, 10, 0]
-    assert [call[5]['vel'] for call in points] == [0, 0, 0]
-    assert [call[5]['ovl'] for call in points] == [1, 1, 1]
+    assert [call[5]['vel'] for call in points] == [100, 100, 100]
+    assert [call[5]['acc'] for call in points] == [100, 100, 100]
+    assert [call[5]['ovl'] for call in points] == [20, 20, 20]
     assert all(call[2:4] == (1, 0) for call in points)
-    assert calls[-1] == ('spline_end',)
+    assert ('spline_end',) in calls
+    assert calls.index(('set_speed', 1)) < calls.index(('spline_start', 0, 6000))
+    assert calls[-1] == ('set_speed', 3)  # Restored after endpoint confirmation.
     assert calls.count(('spline_end',)) == 1
 
 
@@ -348,8 +354,18 @@ def test_spline_end_code_14_explains_controller_speed_alarm():
     session, plane, state, calls = fake_plane_move()
     session.robot.NewSplineEnd = lambda: 14
     poses = [[320, 0, 210, 180, 0, 0]]
-    with pytest.raises(OperatorError, match='Cartesian instruction speed exceeded.*requested override=3%, commissioning override=1%'):
+    with pytest.raises(OperatorError, match='Cartesian instruction speed exceeded.*effective speed was capped at 1%'):
         session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3)
+    assert calls[-1] == ('set_speed', 3)  # The rejected path never started; restore the selected speed.
+
+
+def test_spline_fault_keeps_controller_speed_at_one_percent():
+    session, plane, state, calls = fake_plane_move()
+    session.read = lambda: dict(state, safe=False)
+    poses = [[320, 0, 210, 180, 0, 0]]
+    with pytest.raises(OperatorError, match='controller speed override remains at 1%'):
+        session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3)
+    assert ('set_speed', 1) in calls and ('set_speed', 3) not in calls
 
 
 def test_simulated_transit_spline_ends_at_taught_place_pose():

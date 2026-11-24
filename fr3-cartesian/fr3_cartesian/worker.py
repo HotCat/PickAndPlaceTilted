@@ -682,6 +682,12 @@ class Session:
             reference_joints = joints
         # Do not open a controller spline context until every waypoint has a
         # validated, branch-continuous IK solution.
+        restore_speed = max(1, min(10, int(round(speed))))
+        # FAIRINO's own NewSpline example applies SetSpeed(1) before starting
+        # its spline; NewSplinePoint.ovl alone did not limit this controller's
+        # speed validation. Restore the app's selected percentage only after
+        # the spline endpoint is confirmed stationary.
+        check(self.robot.SetSpeed(1), 'SetSpeed(1)')
         # FAIRINO's public spline example uses 6000 ms. The shorter 2000 ms
         # default can demand an unrealistically fast transition on short FR3
         # routes, so use the vendor's slower commissioning value here.
@@ -690,13 +696,11 @@ class Session:
             last = index == len(checked)-1
             result = self.robot.NewSplinePoint(
                 pose, self.slot, 0, int(last), joint_pos=joints,
-                # FAIRINO documents spline vel/acc as not open; leave both at
-                # their supported defaults. Apply the UI's conservative speed
-                # percentage through the documented spline override instead.
-                # Keep transit at or below 1% during commissioning; the
-                # regular Cartesian speed control may remain higher for exact
-                # stop pick/place moves.
-                vel=0, acc=0, ovl=min(float(speed), 1.0),
+                # Match FAIRINO's official spline example. SetSpeed(1) above
+                # is the effective commissioning cap; ovl remains the example's
+                # conservative path factor and vel/acc keep its documented
+                # nominal values.
+                vel=100, acc=100, ovl=20,
                 blendR=0 if last else blend_radius)
             check(result, 'NewSplinePoint')
         result = self.robot.NewSplineEnd()
@@ -706,23 +710,31 @@ class Session:
                              f'rpy=[{pose[3]:.1f},{pose[4]:.1f},{pose[5]:.1f}] '
                              f'joints=[{",".join(f"{value:.1f}" for value in planned_joints[index])}]'
                              for index, pose in enumerate(checked))
-            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded; requested override={requested:g}%, commissioning override={effective:g}%). Review/reset the controller alarm in WebUI. Planned poses/continuous IK: {plan}',
-                                requested=speed, effective=min(float(speed), 1.0), plan=plan)
+            restored = False
+            try:
+                check(self.robot.SetSpeed(restore_speed), 'RestoreSpeed')
+                restored = True
+            except Exception:
+                pass
+            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded; effective speed was capped at 1%). Review/reset the controller alarm in WebUI. App speed restore {restored} at {speed}% . Planned poses/continuous IK: {plan}',
+                                restored='confirmed' if restored else 'not confirmed; controller may remain at 1%',
+                                speed=restore_speed, plan=plan)
         check(result, 'NewSplineEnd')
 
         deadline = time.monotonic()+60
         while time.monotonic() < deadline:
             feedback = self.read()
             if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
-                raise OperatorError('Controller stopped or faulted during the transit spline')
+                raise OperatorError('Controller stopped or faulted during the transit spline; controller speed override remains at 1%')
             if feedback['stopped']:
                 position_error = float(np.linalg.norm(np.array(feedback['tcp'][:3])-checked[-1][:3]))
                 orientation_error = float(np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(checked[-1][3:])))
                 if position_error <= .02 and orientation_error <= .001:
+                    check(self.robot.SetSpeed(restore_speed), 'RestoreSpeed')
                     return feedback
                 raise OperatorError('Transit spline stopped before its final pick/place endpoint')
             time.sleep(.03)
-        raise OperatorError('Transit spline did not reach its final pick/place endpoint within 60 seconds')
+        raise OperatorError('Transit spline did not reach its final pick/place endpoint within 60 seconds; controller speed override remains at 1%')
 
     def demo_pose(self, kind, index):
         if not self.sim:
