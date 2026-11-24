@@ -584,7 +584,7 @@ def test_static_pick_place_recipe_runs_serially_in_simulator_and_persists(tmp_pa
         window.task_start.click()
         assert window.task_running
         wait_until(app, lambda: not window.task_running and not window.client.busy, seconds=8)
-        assert window.connected and window.tool_applied and window.arm.isChecked()
+        assert window.connected and window.tool_applied and window.arm.isChecked(), window.messages.toPlainText()
         assert window.state['tcp'] == pytest.approx([window.task_destination[i].value() for i in range(6)], abs=.02)
         assert 'Pick/place sequence completed' in window.messages.toPlainText()
         window.schedule_autosave()
@@ -643,6 +643,41 @@ def test_task_start_explains_geometry_blocker_then_enables_after_route_correctio
         assert calls[0][0] == 'move'
         assert calls[0][1]['sequence'] == 'pick'
         assert not window.task_start.isEnabled()
+    finally:
+        window.task_running = False
+        window.connected = False
+        window.close()
+
+
+def test_task_batches_transit_guide_points_into_one_spline_ending_at_place(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'spline-batch.ini'), QSettings.IniFormat))
+    plane = Plane.teach('pick', [[300, 0, 200], [400, 0, 200], [300, 100, 200]])
+    requests = []
+    monkeypatch.setattr(window.client, 'call', lambda method, args: requests.append((method, args)) or True)
+    try:
+        window.timer.stop()
+        window.planes = [plane]
+        window.sync_planes()
+        window.state = {'tcp': [300, 0, 200, 180, 0, 0]}
+        window.state_time = time.monotonic()
+        window.arm.setChecked(True)
+        window.task_running = True
+        window.task_path = [
+            ('Pick 1', [300, 0, 200, 180, 0, 0]),
+            ('Route 1.1', [320, 0, 210, 175, 5, 5]),
+            ('Route 1.2', [340, 0, 220, 170, 10, 10]),
+            ('Place 1', [360, 0, 200, 180, 0, 0]),
+        ]
+        window.task_index = 1
+        window.send_task_segment()
+        assert len(requests) == 1
+        method, args = requests[0]
+        assert method == 'move_spline'
+        assert args['poses'] == [pose for _, pose in window.task_path[1:]]
+        assert args['poses'][-1] == window.task_path[-1][1]
+        assert args['blend_radius'] == 10
+        assert window.task_batch_end == 3
     finally:
         window.task_running = False
         window.connected = False

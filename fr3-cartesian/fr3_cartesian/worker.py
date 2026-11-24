@@ -627,6 +627,73 @@ class Session:
             raise OperatorError('Motion did not reach the target within 15 seconds')
         return self.read()
 
+    def move_spline(self, plane, poses, bounds, speed, blend_radius=10.):
+        """Execute one reviewed transit leg as a controller arc-transition spline.
+
+        The caller batches only transit shaping points and one exact-stop pick
+        or place endpoint. FAIRINO's NewSplinePoint ``lastFlag`` marks that
+        endpoint; non-final points use a modest blend radius. The controller
+        owns the IK interpolation between the taught TCP poses.
+        """
+        state = self.ready(motion=True)
+        if plane.get('reference') != 'robot_base':
+            raise MoveRejected("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")
+        if self.slot == 0:
+            raise MoveRejected("Apply a calibrated tool before moving")
+        if not 0 < speed <= 10:
+            raise MoveRejected("Cartesian speed must be in (0, 10]%")
+        if state['tool'] != self.slot:
+            raise MoveRejected("Active controller tool {actual} differs from calibrated tool {expected}. Apply the saved TCP before moving.",
+                               actual=state['tool'], expected=self.slot)
+        if state['user'] != 0:
+            raise MoveRejected("Select base workpiece 0 in the controller before Cartesian motion (currently {actual}). The controller frame must match the base-frame target.", actual=state['user'])
+        if not self.sim:
+            actual = vector(check(self.robot.GetTCPOffset(), "GetTCPOffset"), 6)
+            if not np.allclose(actual, self.tool, atol=.001, rtol=0):
+                raise MoveRejected("Controller tool offset changed; apply calibration again")
+            workpiece = vector(check(self.robot.GetWObjOffset(), "GetWObjOffset"), 6)
+            if not np.allclose(workpiece, 0, atol=.001, rtol=0):
+                raise MoveRejected("Base workpiece 0 has a nonzero offset. Click “Use base workpiece 0” before moving.")
+        if not isinstance(poses, list) or not poses:
+            raise OperatorValueError('A transit spline needs at least one taught point and a final pick/place point')
+        blend_radius = float(blend_radius)
+        if not np.isfinite(blend_radius) or not 0 <= blend_radius <= 25:
+            raise OperatorValueError('Transit spline blend radius must be between 0 and 25 mm')
+        checked, previous = [], state['tcp']
+        for pose in poses:
+            target_pose = checked_sequence_target(previous, pose)
+            checked.append(target_pose)
+            previous = target_pose
+        if self.sim:
+            final = checked[-1]
+            self.flange = [*(np.array(final[:3])-rotation(final[3:]) @ np.array(self.tool[:3])), *final[3:]]
+            time.sleep(.12)
+            return self.read()
+
+        check(self.robot.NewSplineStart(0, 2000), 'NewSplineStart')
+        for index, pose in enumerate(checked):
+            joints = vector(check(self.robot.GetInverseKin(0, pose), 'GetInverseKin'), 6).tolist()
+            last = index == len(checked)-1
+            result = self.robot.NewSplinePoint(
+                pose, self.slot, 0, int(last), joint_pos=joints, vel=speed,
+                acc=0, ovl=100, blendR=0 if last else blend_radius)
+            check(result, 'NewSplinePoint')
+        check(self.robot.NewSplineEnd(), 'NewSplineEnd')
+
+        deadline = time.monotonic()+60
+        while time.monotonic() < deadline:
+            feedback = self.read()
+            if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
+                raise OperatorError('Controller stopped or faulted during the transit spline')
+            if feedback['stopped']:
+                position_error = float(np.linalg.norm(np.array(feedback['tcp'][:3])-checked[-1][:3]))
+                orientation_error = float(np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(checked[-1][3:])))
+                if position_error <= .02 and orientation_error <= .001:
+                    return feedback
+                raise OperatorError('Transit spline stopped before its final pick/place endpoint')
+            time.sleep(.03)
+        raise OperatorError('Transit spline did not reach its final pick/place endpoint within 60 seconds')
+
     def demo_pose(self, kind, index):
         if not self.sim:
             raise OperatorError("Demo poses are only available in simulation")
@@ -663,7 +730,7 @@ def main():
             sys.exit(1)
         return
     session = Session()
-    allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'demo_pose', 'servo_start', 'servo_end'}
+    allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'move_spline', 'demo_pose', 'servo_start', 'servo_end'}
     inbox = CommandInput(sys.stdin.fileno())
     session.move_cancelled = inbox.cancelled
     next_tick, next_state = 0., 0.

@@ -223,7 +223,7 @@ class RobotClient(QObject):
             self.failed.emit(Message('Velocity feedback timed out. Motion disabled; reconnect required.'))
             return
         if self.pending:
-            limit = 20 if self.pending[1] in ('connect', 'move') else 4
+            limit = 70 if self.pending[1] == 'move_spline' else 20 if self.pending[1] in ('connect', 'move') else 4
             if time.monotonic()-self.pending[2] > limit:
                 connecting = self.pending[1] == 'connect'
                 self.shutdown()

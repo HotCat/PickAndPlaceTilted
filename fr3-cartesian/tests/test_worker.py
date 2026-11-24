@@ -302,6 +302,18 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
             calls.append((pose, kwargs))
             state['tcp'] = pose
             return sdk_error
+        def NewSplineStart(self, kind, average_time):
+            calls.append(('spline_start', kind, average_time))
+            return 0
+        def GetInverseKin(self, kind, pose):
+            return (0, [1, 2, 3, 4, 5, 6])
+        def NewSplinePoint(self, pose, tool, user, last, **kwargs):
+            calls.append(('spline_point', pose, tool, user, last, kwargs))
+            state['tcp'] = list(pose)
+            return 0
+        def NewSplineEnd(self):
+            calls.append(('spline_end',))
+            return 0
     session = Session()
     session.sim = False
     session.tool = [0, 0, 64, 0, 0, 0]
@@ -310,6 +322,44 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
     session.ready = lambda motion=False: state
     session.read = lambda: state
     return session, plane, state, calls
+
+
+def test_spline_batches_transit_guides_and_exact_stop_endpoint():
+    session, plane, state, calls = fake_plane_move()
+    guides = [[330, 30, 220, 175, 5, 10], [360, 30, 240, 170, 10, 20]]
+    endpoint = [390, 30, 220, 180, 0, 0]
+    result = session.move_spline(asdict(plane), [*guides, endpoint], [[-500, 500]]*3, 3, blend_radius=10)
+    assert result['tcp'] == pytest.approx(endpoint)
+    assert calls[0] == ('spline_start', 0, 2000)
+    points = [call for call in calls if call[0] == 'spline_point']
+    assert [call[4] for call in points] == [0, 0, 1]
+    assert [call[5]['blendR'] for call in points] == [10, 10, 0]
+    assert all(call[2:4] == (1, 0) for call in points)
+    assert calls[-1] == ('spline_end',)
+    assert calls.count(('spline_end',)) == 1
+
+
+def test_simulated_transit_spline_ends_at_taught_place_pose():
+    session, plane = calibrated_session()
+    start = session.read()['tcp']
+    via = [(np.array(start[:3])+np.array([20, 10, 5])).tolist()+[175, 5, 10]]
+    destination = [(np.array(start[:3])+np.array([40, 20, 0])).tolist()+[180, 0, 0]]
+    state = session.move_spline(asdict(plane), [*via, *destination], [[-500, 500]]*3, 3)
+    assert state['stopped']
+    assert state['tcp'] == pytest.approx(destination[0])
+
+
+@pytest.mark.parametrize('poses,blend,match', [
+    ([], 10, 'at least one'),
+    ([[301, 0, 200, 180, 0, 0]], 26, 'between 0 and 25'),
+    ([[450, 0, 200, 180, 0, 0]], 10, '100 mm cap'),
+    ([[310, 0, 200, 180, 0]], 10, 'Expected 6'),
+])
+def test_spline_rejects_bad_path_before_controller_commands(poses, blend, match):
+    session, plane, state, calls = fake_plane_move()
+    with pytest.raises(ValueError, match=match):
+        session.move_spline(asdict(plane), poses, [[-500, 500]]*3, 3, blend_radius=blend)
+    assert not calls
 
 
 def test_sequence_transfer_can_leave_plane_and_change_orientation():

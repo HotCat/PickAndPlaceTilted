@@ -637,7 +637,7 @@ class MainWindow(QMainWindow):
         tab.setStyleSheet('QWidget#pickPlaceContent { background-color: #101820; }')
         box = QVBoxLayout(tab)
         box.addWidget(self.paragraph('4  /  STATIC PICK AND PLACE'))
-        box.addWidget(self.paragraph('Teach every part position in the selected workpiece plane. Set one fixed destination in robot-base TCP coordinates, then add any intermediate base TCP waypoints needed to keep each straight MoveL segment clear and within 100 mm. No vision, gripper, collision planner, or automatic approach/retract is included.'))
+        box.addWidget(self.paragraph('Teach every part position in the selected workpiece plane. Set one fixed destination in robot-base TCP coordinates, then add base TCP transit points that guide a controller arc-transition spline. Pick and place endpoints stop exactly; transit points are shaping guides, not stop points. Keep adjacent reviewed poses within 100 mm. No vision, gripper, collision planner, or automatic approach/retract is included.'))
         row = QHBoxLayout()
         self.task_rows = QSpinBox(); self.task_rows.setRange(1, 10); self.task_rows.setValue(3)
         self.task_columns = QSpinBox(); self.task_columns.setRange(1, 10); self.task_columns.setValue(2)
@@ -680,13 +680,13 @@ class MainWindow(QMainWindow):
         self.task_remove_waypoint = self.button('Remove selected waypoint', self.remove_task_waypoint, route_buttons)
         route_layout.addLayout(route_buttons)
         box.addWidget(route_box)
-        box.addWidget(self.paragraph('Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Plane limits apply to pick points; base transit and destination poses retain their taught orientations and may leave the pickup box. Every straight MoveL segment is limited to 100 mm. No gripper I/O is performed.'))
+        box.addWidget(self.paragraph('Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. The controller follows transit waypoints as one smooth arc-transition spline and stops at the next pick/place point. Transit points guide the TCP/IK path; the controller may round them instead of stopping exactly on each one. Plane limits apply to pick points; base transit and destination poses retain their taught orientations and may leave the pickup box. Keep each adjacent pose within 100 mm. No gripper I/O is performed.'))
         self.task_review = QTextEdit()
         self.task_review.setReadOnly(True)
         self.task_review.setMaximumHeight(190)
         self.task_review.setPlainText(self.tr('Select a calibrated base-reference workpiece plane to preview the route.'))
         box.addWidget(self.task_review)
-        self.task_ack = self.checkbox('I reviewed every base TCP waypoint, straight segment, travel bound and destination')
+        self.task_ack = self.checkbox('I reviewed each pick/place stop, transit spline guide, travel bound and destination')
         box.addWidget(self.task_ack)
         self.task_guidance = self.paragraph('Connect to the robot or simulator before starting the sequence.')
         box.addWidget(self.task_guidance)
@@ -895,7 +895,7 @@ class MainWindow(QMainWindow):
             data = self.task_data()
             path = build_trajectory(plane, data['points'], data['destination'], [],
                                     self.orientation or [0., 0., 0.], routes=data['routes'])
-            lines = [self.tr('{count} source points · {moves} straight MoveL segments · row-major order',
+            lines = [self.tr('{count} source points · {moves} reviewed path poses · spline transit between exact-stop picks/places · row-major order',
                              count=data['rows']*data['columns'], moves=len(path))]
             lines.extend(f'{index+1:03d}. {self.task_display_name(name)}: '+', '.join(f'{value:.2f}' for value in pose)
                          for index, (name, pose) in enumerate(path))
@@ -904,6 +904,8 @@ class MainWindow(QMainWindow):
             self.task_review.setText(self.tr('The array or route contains an invalid coordinate: {detail}', detail=str(exc)))
 
     def task_display_name(self, name):
+        if ' → ' in name:
+            return ' → '.join(self.task_display_name(part) for part in name.split(' → '))
         return self.tr(trajectory_name(name))
 
     def task_block_reason(self):
@@ -966,6 +968,27 @@ class MainWindow(QMainWindow):
             self.refresh()
             return
         name, pose = self.task_path[self.task_index]
+        if name.startswith(('Route ', 'Return ')):
+            # Transit poses guide one controller-side arc-transition spline.
+            # Include the next exact-stop Pick/Place endpoint in that batch so
+            # the robot does not stop at any intermediate route point.
+            end = self.task_index
+            while end+1 < len(self.task_path) and self.task_path[end+1][0].startswith(('Route ', 'Return ')):
+                end += 1
+            if end+1 < len(self.task_path) and self.task_path[end+1][0].startswith(('Pick ', 'Place ')):
+                end += 1
+            batch = self.task_path[self.task_index:end+1]
+            label = f'{name} → {batch[-1][0]}'
+            self.log('Sequence spline {index}/{count}: {name}', index=self.task_index+1,
+                     count=len(self.task_path), name=self.task_display_name(label))
+            args = dict(plane=asdict(self.current_plane()), poses=[item[1] for item in batch],
+                        bounds=self.limits(), speed=self.speed.value(), blend_radius=10.)
+            self.task_batch_end = end
+            if not self.client.call('move_spline', args):
+                self.task_running = False
+                self.refresh()
+            return
+
         self.log('Sequence move {index}/{count}: {name}', index=self.task_index+1,
                  count=len(self.task_path), name=self.task_display_name(name))
         plane_target = self.current_plane().from_base(pose[:3])
@@ -1109,10 +1132,11 @@ class MainWindow(QMainWindow):
         elif method == 'demo_pose' and self.demo_pending:
             kind, self.demo_pending = self.demo_pending, None
             self.capture(kind)
-        elif method == 'move':
-            self.log('Plane jog stopped on release' if state.get('plane_jog_stopped') else 'Linear move completed')
+        elif method in ('move', 'move_spline'):
+            self.log('Plane jog stopped on release' if method == 'move' and state.get('plane_jog_stopped') else
+                     'Transit spline completed' if method == 'move_spline' else 'Linear move completed')
             if self.task_running:
-                self.task_index += 1
+                self.task_index = (self.task_batch_end+1 if method == 'move_spline' else self.task_index+1)
                 QTimer.singleShot(80, self.send_task_segment)
             elif self.plane_arrow_held and self.repeat_direction and self.arm.isChecked():
                 self.plane_repeat_timer.start(80)

@@ -22,7 +22,8 @@ def validate_trajectory(plane, path, current_base, bounds):
 
     Only sources belong to the plane's pickup box. Independently taught base
     transfer poses retain their captured orientations and may leave that box.
-    This is geometric preflight; the worker rechecks each move from live state.
+    Each adjacent guide/endpoint spacing is bounded for review; the worker
+    rechecks each dispatched MoveL or spline batch from live state.
     """
     previous = current_base
     previous_name = Message('Current TCP')
