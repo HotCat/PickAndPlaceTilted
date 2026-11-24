@@ -15,11 +15,11 @@ from PySide6.QtWidgets import (
 )
 
 from .client import RobotClient
-from .geometry import Plane, calibrate_pivot, checked_target, check_current_plane_position
+from .geometry import Plane, calibrate_pivot, checked_target, check_current_plane_position, checked_sequence_target, check_pick_point
 from .i18n import LANGUAGES, translate
 from .messages import Message, OperatorValueError, error_message
 from .persistence import read_calibration, write_calibration
-from .tasks import build_trajectory, validate_array, validate_poses, validate_routes
+from .tasks import build_trajectory, validate_array, validate_poses, validate_routes, validate_trajectory, trajectory_name
 
 # Resolve beside this package, not the process working directory: the camera
 # workbenches in the parent repository have their own calibration and SDK files.
@@ -680,7 +680,7 @@ class MainWindow(QMainWindow):
         self.task_remove_waypoint = self.button('Remove selected waypoint', self.remove_task_waypoint, route_buttons)
         route_layout.addLayout(route_buttons)
         box.addWidget(route_box)
-        box.addWidget(self.paragraph('Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Straight MoveL segments must satisfy plane limits and the 100 mm cap. No gripper I/O is performed.'))
+        box.addWidget(self.paragraph('Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Plane limits apply to pick points; base transit and destination poses retain their taught orientations and may leave the pickup box. Every straight MoveL segment is limited to 100 mm. No gripper I/O is performed.'))
         self.task_review = QTextEdit()
         self.task_review.setReadOnly(True)
         self.task_review.setMaximumHeight(190)
@@ -688,6 +688,8 @@ class MainWindow(QMainWindow):
         box.addWidget(self.task_review)
         self.task_ack = self.checkbox('I reviewed every base TCP waypoint, straight segment, travel bound and destination')
         box.addWidget(self.task_ack)
+        self.task_guidance = self.paragraph('Connect to the robot or simulator before starting the sequence.')
+        box.addWidget(self.task_guidance)
         controls = QHBoxLayout()
         self.task_start = self.button('Start pick/place sequence', self.start_task, controls)
         self.task_cancel = self.button('Cancel sequence', self.cancel_task, controls)
@@ -902,13 +904,7 @@ class MainWindow(QMainWindow):
             self.task_review.setText(self.tr('The array or route contains an invalid coordinate: {detail}', detail=str(exc)))
 
     def task_display_name(self, name):
-        for prefix in ('Pick', 'Place'):
-            if name.startswith(prefix+' '):
-                return self.tr('{kind} {index}', kind=self.tr(prefix), index=name[len(prefix)+1:])
-        for prefix in ('Route', 'Return'):
-            if name.startswith(prefix+' '):
-                return self.tr('{kind} {index}', kind=self.tr(prefix), index=name[len(prefix)+1:])
-        return name
+        return self.tr(trajectory_name(name))
 
     def task_block_reason(self):
         fresh = self.state is not None and time.monotonic()-self.state_time < 1.2
@@ -934,19 +930,15 @@ class MainWindow(QMainWindow):
             return 'Use controller manual mode for teaching jog'
         if self.state['user'] != 0:
             return 'Select base workpiece 0 in the controller before Cartesian motion.'
-        if not self.task_ack.isChecked():
-            return 'Review every route pose and check the sequence acknowledgment before starting.'
         try:
             data = self.task_data()
             path = build_trajectory(self.current_plane(), data['points'], data['destination'],
                                     [], self.orientation, routes=data['routes'])
-            previous = self.state['tcp']
-            for _, pose in path:
-                target = self.current_plane().from_base(pose[:3])
-                checked_target(self.current_plane(), previous, target, pose[3:], self.limits())
-                previous = pose
+            validate_trajectory(self.current_plane(), path, self.state['tcp'], self.limits())
         except (ValueError, TypeError, IndexError) as exc:
-            return 'A route target violates plane limits or the 100 mm segment cap.'
+            return error_message(exc)
+        if not self.task_ack.isChecked():
+            return 'Review every route pose and check the sequence acknowledgment before starting.'
         return None
 
     def start_task(self):
@@ -977,7 +969,8 @@ class MainWindow(QMainWindow):
         self.log('Sequence move {index}/{count}: {name}', index=self.task_index+1,
                  count=len(self.task_path), name=self.task_display_name(name))
         plane_target = self.current_plane().from_base(pose[:3])
-        if not self.send_move(plane_target, speed=self.speed.value(), orientation=pose[3:]):
+        if not self.send_move(plane_target, speed=self.speed.value(), orientation=pose[3:],
+                              sequence='pick' if name.startswith('Pick ') else 'transfer'):
             self.task_running = False
             self.refresh()
 
@@ -1262,6 +1255,8 @@ class MainWindow(QMainWindow):
         reason = self.task_block_reason()
         self.task_start.setEnabled(reason is None and not self.task_running)
         self.task_start.setToolTip(self.tr(reason) if reason else '')
+        self.task_guidance.setText(self.tr('Sequence running: {index}/{count}.', index=self.task_index+1, count=len(self.task_path))
+                                   if self.task_running else self.tr(reason or 'Ready to start the reviewed pick/place sequence.'))
         self.task_cancel.setEnabled(self.task_running)
         capture_reason = self.task_capture_block_reason()
         self.task_capture_button.setEnabled(capture_reason is None and not self.task_running)
@@ -1611,7 +1606,7 @@ class MainWindow(QMainWindow):
     def move_target(self):
         self.send_move([w.value() for w in self.targets])
 
-    def send_move(self, target, speed=None, jog=False, orientation=None):
+    def send_move(self, target, speed=None, jog=False, orientation=None, sequence=None):
         if not self.arm.isChecked() or self.client.busy:
             return False
         try:
@@ -1619,9 +1614,16 @@ class MainWindow(QMainWindow):
                 raise OperatorValueError('Position is stale; wait for live feedback')
             plane = self.current_plane()
             orientation = self.orientation if orientation is None else orientation
-            checked_target(plane, self.state['tcp'], target, orientation, self.limits())
+            if sequence is None:
+                checked_target(plane, self.state['tcp'], target, orientation, self.limits())
+            else:
+                if sequence == 'pick':
+                    check_pick_point(target, self.limits())
+                checked_sequence_target(self.state['tcp'], [*plane.to_base(target), *orientation])
             args = dict(plane=asdict(plane), target=target, orientation=orientation,
                         bounds=self.limits(), speed=self.speed.value() if speed is None else speed)
+            if sequence is not None:
+                args['sequence'] = sequence
             accepted = self.client.start_plane_jog(args) if jog else self.client.call('move', args)
         except ValueError as exc:
             self.log(error_message(exc))

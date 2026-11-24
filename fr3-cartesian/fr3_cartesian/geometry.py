@@ -142,3 +142,36 @@ def checked_target(plane, current_base, target, orientation, bounds, max_distanc
     if angle > 1:
         raise OperatorValueError("Tool orientation changed; lock the current orientation again")
     return result
+
+
+def check_pick_point(target, bounds):
+    """Apply the workpiece pickup box to a source point, not its transfer route."""
+    xyz = vector(target, 3)
+    limits = np.asarray(bounds, dtype=float)
+    if limits.shape != (3, 2) or not np.isfinite(limits).all() or np.any(limits[:, 0] >= limits[:, 1]):
+        raise OperatorValueError("Each minimum must be smaller than its maximum")
+    outside = np.flatnonzero((xyz < limits[:, 0]-1e-6) | (xyz > limits[:, 1]+1e-6))
+    if len(outside):
+        axis = int(outside[0])
+        raise OperatorValueError('Pick point outside plane limits: {axis}={position:.3f} mm; allowed [{minimum:.3f}, {maximum:.3f}] mm',
+                                 axis='XYZ'[axis], position=float(xyz[axis]),
+                                 minimum=float(limits[axis, 0]), maximum=float(limits[axis, 1]))
+
+
+def checked_sequence_target(current_base, target_pose, max_distance=100):
+    """Validate one base-frame recipe pose without constraining it to the pick plane.
+
+    Transit and destination poses intentionally travel outside the workpiece
+    pickup box and may use independently captured orientations. Keep every
+    absolute base TCP pose bounded and every straight segment short enough to
+    review and execute as an individual MoveL.
+    """
+    current = vector(current_base, 6)
+    target = vector(target_pose, 6)
+    if any(abs(value) > 2000 for value in target[:3]):
+        raise OperatorValueError('Base TCP coordinates must be between −2000 and 2000 mm')
+    distance = float(np.linalg.norm(target[:3]-current[:3]))
+    if distance > max_distance:
+        raise OperatorValueError('Sequence segment {distance:.1f} mm exceeds the {maximum:g} mm cap; add an intermediate waypoint or reposition before starting',
+                                 distance=distance, maximum=max_distance)
+    return target.tolist()

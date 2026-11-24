@@ -569,7 +569,10 @@ def test_static_pick_place_recipe_runs_serially_in_simulator_and_persists(tmp_pa
         for row, point in enumerate(([0, 5, 0], [5, 5, 0])):
             for column, value in enumerate(point, start=2):
                 window.task_points.item(row, column).setText(str(value))
-        for widget, value in zip(window.task_destination, [320, 30, 210, *window.orientation]):
+        # The destination leaves the pickup Z box and uses a taught attitude.
+        # The return to Pick 2 must restore the locked source orientation.
+        destination = [320, 30, 150, 160, 20, 40]
+        for widget, value in zip(window.task_destination, destination):
             widget.setValue(value)
         assert window.task_waypoints.rowCount() == 0
         assert window.task_block_reason() is not None  # Operator review is required.
@@ -589,11 +592,61 @@ def test_static_pick_place_recipe_runs_serially_in_simulator_and_persists(tmp_pa
         saved = read_calibration(session_path)
         assert saved['task']['rows'] == 1 and saved['task']['columns'] == 2
         assert saved['task']['points'] == [[0, 5, 0], [5, 5, 0]]
-        assert saved['task']['destination'] == [320, 30, 210, *window.orientation]
+        assert saved['task']['destination'] == destination
         assert 'task_ack' not in json.loads(session_path.read_text())  # execution permission is never persisted
     finally:
         window.close()
         app.processEvents()
+
+
+@pytest.mark.parametrize('language', ['en', 'zh_CN'])
+def test_task_start_explains_geometry_blocker_then_enables_after_route_correction(tmp_path, monkeypatch, language):
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'task-preflight.ini'), QSettings.IniFormat),
+                        session_path=tmp_path/'session.json', language=language)
+    calls = []
+    monkeypatch.setattr(window.client, 'call', lambda method, args: calls.append((method, args)) or True)
+    try:
+        window.timer.stop()
+        window.planes = [Plane.teach('pick', [[300, 0, 200], [400, 0, 200], [300, 100, 200]])]
+        window.sync_planes()
+        window.connected = window.tool_applied = True
+        window.state = Session().read()
+        window.state['tcp'] = [300, 0, 200, 180, 0, 0]
+        window.state_time = time.monotonic()
+        window.orientation = [180, 0, 0]
+        window.axes_verified.setChecked(True)
+        window.arm.setChecked(True)
+        window.task_rows.setValue(1)
+        window.task_columns.setValue(1)
+        for widget, value in zip(window.task_destination, [470.45, 0, 200, 160, 20, 40]):
+            widget.setValue(value)
+        window.task_ack.setChecked(True)
+        window.refresh()
+        reason = window.task_guidance.text()
+        assert not window.task_start.isEnabled()
+        assert '170.4' in reason and '100' in reason
+        assert ('Pick 1 → Place 1' if language == 'en' else '取料 1 → 放料 1') in reason
+        assert window.task_start.toolTip() == reason
+        window.start_task()  # Direct invocation must not bypass preflight.
+        assert not calls
+        # Shorten the straight segment to satisfy the reviewed 100 mm cap.
+        window.task_destination[0].setValue(390)
+        window.task_ack.setChecked(True)
+        window.state_time = time.monotonic()
+        window.refresh()
+        assert window.task_block_reason() is None
+        assert window.task_start.isEnabled()
+        assert ('Ready to start' if language == 'en' else '已就绪') in window.task_guidance.text()
+        window.start_task()
+        assert calls[0][0] == 'move'
+        assert calls[0][1]['sequence'] == 'pick'
+        assert not window.task_start.isEnabled()
+    finally:
+        window.task_running = False
+        window.connected = False
+        window.close()
 
 
 def test_capture_live_tcp_teaches_selected_array_row_in_plane_coordinates(tmp_path):

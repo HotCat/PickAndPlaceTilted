@@ -445,7 +445,7 @@
   "Cancel sequence": "取消序列",
   "Jog to each part with 3 XYZ controls, select its array row, then capture the live TCP position. You can still edit coordinates directly for fine tuning. Row-major order is the pick order; resizing preserves overlapping edits and fills new cells on a 30 mm grid.": "使用“3 XYZ controls”将机器人点动到工件位置，选择对应阵列行，然后采集实时 TCP 坐标。仍可直接编辑坐标进行微调。取料顺序为按行优先；调整阵列尺寸时会保留已有单元格，并以 30 mm 间距填充新增单元格。",
   "FIXED DESTINATION / ROBOT BASE TCP · mm, °": "固定放置点 / 机器人基坐标 TCP · mm, °",
-  "Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Straight MoveL segments must satisfy plane limits and the 100 mm cap. No gripper I/O is performed.": "请选择上方阵列工件以编辑其独立过渡路径。使用 XYZ 点动到过渡位置，然后点击“添加路径点”采集当前基坐标 TCP 姿态。去程：当前取料点 → 该工件的路径点 → 固定放置点。返程：放置点 → 下一个工件的路径点（逆序）→ 下一个取料点。每条直线 MoveL 均须满足平面限位和 100 mm 上限。本程序不控制夹爪 I/O。",
+  "Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Straight MoveL segments must satisfy plane limits and the 100 mm cap. No gripper I/O is performed.": "在上方选择阵列零件，编辑其独立中转路点。点动至每个中转位置后，点击“添加路点”采集当前基坐标系 TCP 位姿。去程：所选取料点 → 其路点 → 目的地。回程：目的地 → 下一零件路点的逆序 → 下一取料点。MoveL 直线段必须符合平面限位且不超过 100 mm。不执行夹爪 I/O。",
   "I reviewed every base TCP waypoint, straight segment, travel bound and destination": "我已检查每个基坐标 TCP 路径点、直线段、行程限位及放置点",
   "MANUAL TRANSIT WAYPOINTS / ROBOT BASE TCP · mm, °": "手动过渡路径点 / 机器人基坐标 TCP · mm, °",
   "Pick/place sequence blocked: {reason}": "取放序列无法启动：{reason}",
@@ -489,5 +489,15 @@
   "Return": "返程",
   "{kind} {index}": "{kind} {index}",
   "Select base workpiece 0 in the controller before Cartesian motion.": "执行笛卡尔运动前，请在控制器中选择基坐标工件 0。",
-  "A route target violates plane limits or the 100 mm segment cap.": "路径目标超出平面限位或单段 100 mm 上限。"
+  "A route target violates plane limits or the 100 mm segment cap.": "路径目标超出平面限位或单段 100 mm 上限。",
+  "Pick point outside plane limits: {axis}={position:.3f} mm; allowed [{minimum:.3f}, {maximum:.3f}] mm": "取料点超出平面限位：{axis}={position:.3f} mm；允许范围 [{minimum:.3f}, {maximum:.3f}] mm",
+  "Sequence segment {distance:.1f} mm exceeds the {maximum:g} mm cap; add an intermediate waypoint or reposition before starting": "路径段长 {distance:.1f} mm，超过 {maximum:g} mm 上限；请添加中间路点，或在启动前调整起始位置",
+  "Current TCP": "当前 TCP",
+  "{start} → {end}: {detail}": "{start} → {end}：{detail}",
+  "Invalid sequence motion request": "无效的序列运动请求",
+  "Sequence running: {index}/{count}.": "序列执行中：{index}/{count}。",
+  "Ready to start the reviewed pick/place sequence.": "已就绪，可以启动已审核的取放序列。",
+  "Select an array part above to edit its own transit waypoints. Jog to each transit position, then click Add waypoint to capture the current base TCP pose. Outbound: selected source → its waypoints → destination. Return: destination → next part’s waypoints in reverse → next source. Plane limits apply to pick points; base transit and destination poses retain their taught orientations and may leave the pickup box. Every straight MoveL segment is limited to 100 mm. No gripper I/O is performed.": "在上方选择阵列零件，编辑其独立中转路点。点动至每个中转位置后，点击“添加路点”采集当前基坐标系 TCP 位姿。去程：所选取料点 → 其路点 → 目的地。回程：目的地 → 下一零件路点的逆序 → 下一取料点。平面限位仅用于取料点；基坐标系的中转和目的地位姿保留示教姿态，可离开取料区域。每段 MoveL 直线运动限长 100 mm。不执行夹爪 I/O。",
+  "Each array part must have its own waypoint list": "每个阵列零件都必须有独立的路点列表",
+  "Teach every part position in the selected workpiece plane. Set one fixed destination in robot-base TCP coordinates, then add any intermediate base TCP waypoints needed to keep each straight MoveL segment clear and within 100 mm. No vision, gripper, collision planner, or automatic approach/retract is included.": "在所选工件平面中示教每个零件位置。在机器人基坐标系 TCP 中设置固定目的地，然后添加所需的基坐标系 TCP 中间路点，使每段 MoveL 直线路径保持避障间距且长度不超过 100 mm。本原型不包含视觉、夹爪、碰撞规划或自动接近/撤回。"
 }

@@ -312,6 +312,66 @@ def fake_plane_move(selected_workpiece=0, sdk_error=0):
     return session, plane, state, calls
 
 
+def test_sequence_transfer_can_leave_plane_and_change_orientation():
+    session, plane, state, calls = fake_plane_move()
+    target = [0, 0, -60]
+    result = session.move(asdict(plane), target, [160, 20, 40], [[-10, 10]]*3, 3, sequence='transfer')
+    assert result['tcp'] == pytest.approx([*plane.to_base(target), 160, 20, 40])
+    assert calls[0][1] == dict(tool=1, user=0, vel=3, ovl=100, blendR=0, offset_flag=0)
+    # Return from outside the box to a pick with the locked source orientation.
+    result = session.move(asdict(plane), [0, 0, 0], [180, 0, 0], [[-10, 10]]*3, 3, sequence='pick')
+    assert result['tcp'] == pytest.approx([*plane.origin, 180, 0, 0])
+
+
+@pytest.mark.parametrize('sequence,target,orientation,match', [
+    ('pick', [0, 0, 11], [180, 0, 0], 'Pick point outside'),
+    ('transfer', [0, 0, -101], [180, 0, 0], '100 mm cap'),
+    (None, [0, 0, -60], [180, 0, 0], 'outside the plane limits'),
+    (None, [0, 0, 0], [160, 20, 40], 'Tool orientation changed'),
+    ('invalid', [0, 0, 0], [180, 0, 0], 'Invalid sequence'),
+])
+def test_sequence_validation_keeps_pick_and_normal_xyz_guards(sequence, target, orientation, match):
+    session, plane, state, calls = fake_plane_move()
+    with pytest.raises(MoveRejected, match=match):
+        session.move(asdict(plane), target, orientation, [[-10, 10]]*3, 3, sequence=sequence)
+    assert not calls
+
+
+@pytest.mark.parametrize('field,value,match', [('tool', 2, 'differs'), ('user', 1, 'currently 1')])
+def test_sequence_keeps_tool_and_base_frame_guards(field, value, match):
+    session, plane, state, calls = fake_plane_move()
+    state[field] = value
+    with pytest.raises(MoveRejected, match=match):
+        session.move(asdict(plane), [0, 0, -60], [160, 20, 40], [[-10, 10]]*3, 3, sequence='transfer')
+    assert not calls
+
+
+def test_sequence_waits_for_orientation_even_when_translation_already_matches(monkeypatch):
+    session, plane, state, calls = fake_plane_move()
+    reads = []
+    def feedback():
+        reads.append(True)
+        if len(reads) < 3:
+            return dict(state, tcp=[*state['tcp'][:3], 180, 0, 0])
+        return state
+    session.read = feedback
+    monkeypatch.setattr('fr3_cartesian.worker.time.sleep', lambda _: None)
+    result = session.move(asdict(plane), [0, 0, 0], [160, 20, 40], [[-10, 10]]*3, 3, sequence='transfer')
+    assert len(reads) == 3
+    assert result['tcp'][3:] == [160, 20, 40]
+
+
+@pytest.mark.parametrize('field,value', [('safe', False), ('stopped', False), ('program_stopped', False), ('enabled', False), ('errors', [1, 3])])
+def test_sequence_requires_fresh_ready_controller_state(field, value):
+    session, plane, state, calls = fake_plane_move()
+    state[field] = value
+    session.read = lambda: state
+    session.ready = Session.ready.__get__(session)
+    with pytest.raises(OperatorError):
+        session.move(asdict(plane), [0, 0, -60], [160, 20, 40], [[-10, 10]]*3, 3, sequence='transfer')
+    assert not calls
+
+
 @pytest.mark.parametrize('selected_workpiece', [1, 7])
 def test_non_base_workpiece_rejects_before_sending_motion(selected_workpiece):
     session, plane, state, calls = fake_plane_move(selected_workpiece)

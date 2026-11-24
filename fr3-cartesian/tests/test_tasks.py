@@ -2,7 +2,7 @@
 import pytest
 
 from fr3_cartesian.geometry import Plane
-from fr3_cartesian.tasks import build_trajectory, validate_array, validate_poses
+from fr3_cartesian.tasks import build_trajectory, validate_array, validate_poses, validate_trajectory
 
 
 @pytest.fixture
@@ -68,3 +68,38 @@ def test_manual_routes_are_bounded_and_validate_six_axis_poses():
         validate_poses([[2001, 0, 0, 0, 0, 0]])
     with pytest.raises(ValueError):
         validate_poses([[0, 0, 0, 0, 0]])
+
+
+def test_transfer_leaves_pickup_box_and_preserves_taught_orientations(plane):
+    bounds = [[-10, 10]]*3
+    route = [*plane.to_base([0, 0, -60]), 160, 20, 40]
+    destination = [*plane.to_base([0, 0, -120]), 130, 10, 60]
+    path = build_trajectory(plane, [[0, 0, 0], [5, 0, 0]], destination, [route], [180, 0, 0])
+    # Also allow approaching the first pick from outside the pickup box.
+    validate_trajectory(plane, path, route, bounds)
+    assert path[1][1] == route
+    assert path[2][1] == destination
+    assert path[4][1][3:] == [180, 0, 0]
+
+
+def test_pick_limit_error_names_point_axis_and_interval(plane):
+    path = build_trajectory(plane, [[0, 0, 11]], [*plane.origin, 180, 0, 0], [], [180, 0, 0])
+    with pytest.raises(ValueError, match=r'Current TCP → Pick 1: Pick point outside plane limits: Z=11.000.*\[-10.000, 10.000\]'):
+        validate_trajectory(plane, path, [*plane.origin, 180, 0, 0], [[-10, 10]]*3)
+
+
+def test_long_segment_error_names_both_endpoints_and_distance(plane):
+    source = [*plane.origin, 180, 0, 0]
+    waypoint = [source[0]+170.45, *source[1:]]
+    path = build_trajectory(plane, [[0, 0, 0]], waypoint, [waypoint], [180, 0, 0])
+    with pytest.raises(ValueError, match=r'Pick 1 → Route 1.1: Sequence segment 170.4 mm exceeds the 100 mm cap'):
+        validate_trajectory(plane, path, source, [[-10, 10]]*3)
+    with pytest.raises(ValueError, match='Current TCP → Pick 1'):
+        validate_trajectory(plane, path, waypoint, [[-10, 10]]*3)
+
+
+@pytest.mark.parametrize('pose', [[float('nan'), 0, 0, 0, 0, 0], [2001, 0, 0, 0, 0, 0], [0, 0, 0, float('inf'), 0, 0]])
+def test_sequence_validation_rejects_invalid_base_poses(pose):
+    from fr3_cartesian.geometry import checked_sequence_target
+    with pytest.raises(ValueError):
+        checked_sequence_target([0]*6, pose)

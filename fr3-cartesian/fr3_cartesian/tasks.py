@@ -5,8 +5,36 @@ vision measurements or controller state. Each transit waypoint and the fixed
 destination is a full TCP pose in robot base. Each part has an outbound transit
 list; reversing the next part's list gives its inbound path from the destination.
 """
-from .geometry import vector
-from .messages import OperatorValueError
+from .geometry import vector, check_pick_point, checked_sequence_target
+from .messages import Message, OperatorValueError, error_message
+
+
+def trajectory_name(name):
+    """Keep generated route labels translatable, including inside error messages."""
+    for prefix in ('Pick', 'Place', 'Route', 'Return'):
+        if name.startswith(prefix+' '):
+            return Message('{kind} {index}', {'kind': Message(prefix), 'index': name[len(prefix)+1:]})
+    return Message(name)
+
+
+def validate_trajectory(plane, path, current_base, bounds):
+    """Check every straight segment, including the initial move from live TCP.
+
+    Only sources belong to the plane's pickup box. Independently taught base
+    transfer poses retain their captured orientations and may leave that box.
+    This is geometric preflight; the worker rechecks each move from live state.
+    """
+    previous = current_base
+    previous_name = Message('Current TCP')
+    for name, pose in path:
+        try:
+            if name.startswith('Pick '):
+                check_pick_point(plane.from_base(pose[:3]), bounds)
+            checked_sequence_target(previous, pose)
+        except ValueError as exc:
+            raise OperatorValueError('{start} → {end}: {detail}', start=previous_name,
+                                     end=trajectory_name(name), detail=error_message(exc)) from exc
+        previous, previous_name = pose, trajectory_name(name)
 
 
 def validate_array(rows, columns, points):

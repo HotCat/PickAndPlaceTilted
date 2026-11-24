@@ -11,7 +11,7 @@ import time
 import xmlrpc.client
 import numpy as np
 
-from .geometry import Plane, checked_target, rotation, rpy, tcp_from_flange, vector, pose_to_base
+from .geometry import Plane, checked_target, checked_sequence_target, check_pick_point, rotation, rpy, tcp_from_flange, vector, pose_to_base
 from .messages import MoveRejected, OperatorError, OperatorValueError, error_message
 from .velocity import TrackingGovernor, VelocityIntegrator, SERVO_PERIOD, INPUT_TIMEOUT
 from .feedback import install_feedback_reader
@@ -520,7 +520,7 @@ class Session:
             check(self.robot.StopJOG(stop_ref), "StopJOG")
         return self.read()
 
-    def move(self, plane, target, orientation, bounds, speed, jog_token=None):
+    def move(self, plane, target, orientation, bounds, speed, jog_token=None, sequence=None):
         state = self.ready(motion=True)
         if plane.get('reference') != 'robot_base':
             raise MoveRejected("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")
@@ -542,7 +542,18 @@ class Session:
                 raise MoveRejected("Base workpiece 0 has a nonzero offset. Click “Use base workpiece 0” before moving.")
         try:
             frame = Plane.teach(plane['name'], plane['points'])
-            pose = checked_target(frame, state['tcp'], target, orientation, bounds)
+            if sequence not in (None, 'pick', 'transfer') or (sequence is not None and jog_token is not None):
+                raise OperatorValueError('Invalid sequence motion request')
+            if sequence is None:
+                pose = checked_target(frame, state['tcp'], target, orientation, bounds)
+            else:
+                # A recipe explicitly teaches full base TCP poses. Retain those
+                # orientations and check the pickup box only on source moves.
+                # All readiness/tool/frame checks above still apply, and the
+                # distance cap is rechecked against actual feedback per move.
+                if sequence == 'pick':
+                    check_pick_point(target, bounds)
+                pose = checked_sequence_target(state['tcp'], [*frame.to_base(target), *vector(orientation, 3)])
         except OperatorValueError as exc:
             raise MoveRejected(exc.message.source, **exc.message.values) from exc
         if jog_token is not None and self.move_cancelled(jog_token):
@@ -607,7 +618,8 @@ class Session:
                     if cancelled:
                         if feedback['program_stopped']:
                             return dict(feedback, plane_jog_stopped=True)
-                    elif np.linalg.norm(np.array(feedback['tcp'][:3])-pose[:3]) < 0.02:
+                    elif (np.linalg.norm(np.array(feedback['tcp'][:3])-pose[:3]) < 0.02
+                          and (sequence is None or np.allclose(rotation(feedback['tcp'][3:]), rotation(pose[3:]), atol=.001, rtol=0))):
                         return feedback
                 time.sleep(0.03)
             if cancelled:
