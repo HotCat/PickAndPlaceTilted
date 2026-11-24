@@ -979,7 +979,7 @@ class MainWindow(QMainWindow):
                 end += 1
             batch = self.task_path[self.task_index:end+1]
             label = f'{name} → {batch[-1][0]}'
-            self.log('Sequence spline {index}/{count}: {name}', index=self.task_index+1,
+            self.log('Sequence spline {index}/{count}: {name} · commissioning speed cap 1%', index=self.task_index+1,
                      count=len(self.task_path), name=self.task_display_name(label))
             args = dict(plane=asdict(self.current_plane()), poses=[item[1] for item in batch],
                         bounds=self.limits(), speed=self.speed.value(), blend_radius=10.)

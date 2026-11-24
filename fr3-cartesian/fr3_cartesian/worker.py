@@ -682,7 +682,10 @@ class Session:
             reference_joints = joints
         # Do not open a controller spline context until every waypoint has a
         # validated, branch-continuous IK solution.
-        check(self.robot.NewSplineStart(0, 2000), 'NewSplineStart')
+        # FAIRINO's public spline example uses 6000 ms. The shorter 2000 ms
+        # default can demand an unrealistically fast transition on short FR3
+        # routes, so use the vendor's slower commissioning value here.
+        check(self.robot.NewSplineStart(0, 6000), 'NewSplineStart')
         for index, (pose, joints) in enumerate(zip(checked, planned_joints)):
             last = index == len(checked)-1
             result = self.robot.NewSplinePoint(
@@ -690,7 +693,11 @@ class Session:
                 # FAIRINO documents spline vel/acc as not open; leave both at
                 # their supported defaults. Apply the UI's conservative speed
                 # percentage through the documented spline override instead.
-                vel=0, acc=0, ovl=speed, blendR=0 if last else blend_radius)
+                # Keep transit at or below 1% during commissioning; the
+                # regular Cartesian speed control may remain higher for exact
+                # stop pick/place moves.
+                vel=0, acc=0, ovl=min(float(speed), 1.0),
+                blendR=0 if last else blend_radius)
             check(result, 'NewSplinePoint')
         result = self.robot.NewSplineEnd()
         code = result[0] if isinstance(result, (list, tuple)) else result
@@ -699,8 +706,8 @@ class Session:
                              f'rpy=[{pose[3]:.1f},{pose[4]:.1f},{pose[5]:.1f}] '
                              f'joints=[{",".join(f"{value:.1f}" for value in planned_joints[index])}]'
                              for index, pose in enumerate(checked))
-            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded; override={speed:g}%). Review/reset the controller alarm in WebUI. Planned poses/continuous IK: {plan}',
-                                speed=speed, plan=plan)
+            raise OperatorError('Transit spline rejected by the controller (FAIRINO error 14: Cartesian instruction speed exceeded; requested override={requested:g}%, commissioning override={effective:g}%). Review/reset the controller alarm in WebUI. Planned poses/continuous IK: {plan}',
+                                requested=speed, effective=min(float(speed), 1.0), plan=plan)
         check(result, 'NewSplineEnd')
 
         deadline = time.monotonic()+60
