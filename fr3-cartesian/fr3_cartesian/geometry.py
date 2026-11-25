@@ -110,6 +110,40 @@ class Plane:
         return [*self.origin, *rpy(np.asarray(self.basis))]
 
 
+def perpendicular_tool_orientation(plane, current_orientation):
+    """Orient TCP +Z normal to a taught plane while minimizing tool-roll change.
+
+    The normal sign is selected to be closest to the current TCP +Z direction,
+    avoiding an unnecessary 180-degree flip. Current TCP +X is projected onto
+    the plane to preserve roll; a plane-axis fallback handles near-parallel
+    configurations where that projection has almost zero length.
+    """
+    if plane.reference != 'robot_base':
+        raise OperatorValueError("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")
+    basis = np.asarray(plane.basis, dtype=float)
+    current = rotation(current_orientation)
+    normal = basis[:, 2].copy()
+    if float(np.dot(normal, current[:, 2])) < 0:
+        normal *= -1
+
+    def project(axis):
+        value = axis-normal*float(np.dot(normal, axis))
+        length = float(np.linalg.norm(value))
+        return value/length if length > 1e-8 else None
+
+    x_axis = project(current[:, 0])
+    if x_axis is None:
+        x_axis = project(current[:, 1])
+    if x_axis is None:
+        x_axis = project(basis[:, 0])
+    if x_axis is None:
+        raise OperatorValueError("Cannot determine a stable tool roll for this plane")
+    y_axis = np.cross(normal, x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    x_axis = np.cross(y_axis, normal)
+    return rpy(np.column_stack([x_axis, y_axis, normal]))
+
+
 def check_current_plane_position(plane, current_base, bounds):
     if plane.reference != 'robot_base':
         raise OperatorValueError("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")

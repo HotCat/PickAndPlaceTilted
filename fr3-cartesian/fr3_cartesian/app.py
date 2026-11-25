@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from .client import RobotClient
-from .geometry import Plane, calibrate_pivot, checked_target, check_current_plane_position, checked_sequence_target, check_pick_point
+from .geometry import (Plane, calibrate_pivot, checked_target, check_current_plane_position,
+                       checked_sequence_target, check_pick_point, perpendicular_tool_orientation)
 from .i18n import LANGUAGES, translate
 from .messages import Message, OperatorValueError, error_message
 from .persistence import read_calibration, write_calibration
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
         self.draft_reference = 'robot_base'
         self.orientation = None
         self.saved_orientation = None
+        self.orientation_alignment_pending = False
         self.capture_kind = None
         self.demo_pending = None
         self.repeat_direction = None
@@ -292,7 +294,7 @@ class MainWindow(QMainWindow):
                       if self.summary_status == 'changed' else 'Capture at least four contacts to calculate the TCP.')
             self.tool_summary.setText(self.tr(source))
         if self.orientation is None and self.saved_orientation is not None:
-            self.orientation_label.setText(self.tr('Saved orientation: {angles}. Lock current orientation again.',
+            self.orientation_label.setText(self.tr('Saved orientation: {angles}. Align TCP to the selected plane again.',
                                                   angles=' / '.join(f'{v:.2f}°' for v in self.saved_orientation)))
         elif self.orientation is None:
             self.orientation_label.setText(self.tr('Orientation not locked'))
@@ -554,12 +556,12 @@ class MainWindow(QMainWindow):
         self.plane_readout = self.paragraph('Plane XYZ: —')
         box.addWidget(self.plane_readout)
         row = QHBoxLayout()
-        self.lock_button = self.button('Lock current tool orientation', self.lock_orientation, row)
+        self.lock_button = self.button('Align TCP +Z perpendicular to plane', self.align_orientation_to_plane, row)
         self.orientation_label = self.label('Orientation not locked')
         self.orientation_label.setWordWrap(True)
         row.addWidget(self.orientation_label)
         box.addLayout(row)
-        self.orientation_guidance = self.paragraph('Connect to the robot before locking tool orientation.')
+        self.orientation_guidance = self.paragraph('Connect to the robot before aligning the TCP to the selected plane.')
         box.addWidget(self.orientation_guidance)
         tcp_row = QHBoxLayout()
         self.apply_saved_tcp_button = self.button('Apply saved TCP', self.apply_tool, tcp_row)
@@ -618,7 +620,7 @@ class MainWindow(QMainWindow):
             self.arrows.append(b)
         pad.addWidget(self.label('XY plane'), 1, 1, alignment=Qt.AlignCenter)
         box.addLayout(pad)
-        box.addWidget(self.paragraph('Hold an arrow to move up to the step limit. Release to request an immediate stop, including during the current step. Hold mode repeats 1 mm steps only while pressed. Each move preserves the locked orientation.'))
+        box.addWidget(self.paragraph('The alignment control rotates the TCP in place so its +Z axis is perpendicular to the selected plane. It chooses the nearer plane-normal direction and preserves the current tool roll where possible. Review clearance before using it. After alignment, hold an arrow to move up to the step limit; release to request an immediate stop. Hold mode repeats 1 mm steps only while pressed. Each jog preserves the aligned orientation.'))
         row = QHBoxLayout()
         self.targets = [number(-2000, 2000, 0) for _ in range(3)]
         for name, target in zip('XYZ', self.targets):
@@ -934,7 +936,7 @@ class MainWindow(QMainWindow):
         if self.current_plane() is None or self.current_plane().reference != 'robot_base':
             return 'Select a valid base-reference workpiece plane before starting the sequence.'
         if self.orientation is None:
-            return 'Lock the current tool orientation in XYZ controls before starting the sequence.'
+            return 'Align the TCP perpendicular to the selected plane before starting the sequence.'
         if not self.arm.isChecked():
             return 'Enable Cartesian motion and verify the plane directions and limits first.'
         if self.client.busy or not self.state['stopped'] or not self.state['program_stopped']:
@@ -1031,6 +1033,7 @@ class MainWindow(QMainWindow):
 
     def failure(self, text):
         was_connected = self.connected
+        self.orientation_alignment_pending = False
         self.task_running = False
         self.task_path = []
         self.repeat_direction = None
@@ -1047,6 +1050,7 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def move_rejected(self, message):
+        self.orientation_alignment_pending = False
         self.task_running = False
         self.task_path = []
         self.disarm()
@@ -1112,7 +1116,7 @@ class MainWindow(QMainWindow):
         elif method == 'apply_tool':
             self.log('Calibrated TCP applied. Continue to workpiece planes.')
         elif method == 'select_base_frame':
-            self.log('Base workpiece 0 selected and verified. Lock orientation and verify plane directions/limits before enabling motion.')
+            self.log('Base workpiece 0 selected and verified. Align TCP perpendicular to the plane and verify axes/limits before enabling motion.')
         elif method == 'apply_plane':
             self.last_plane_application = state['applied_workpiece']
             self.plane_replace_confirm.setChecked(False)
@@ -1143,13 +1147,20 @@ class MainWindow(QMainWindow):
                 self.orientation = state['tcp'][3:]
                 self.saved_orientation = list(self.orientation)
                 self.orientation_label.setText(' / '.join(f'{v:.2f}°' for v in self.orientation))
-                self.log('Current orientation locked')
+                self.log('Current orientation captured')
         elif method == 'demo_pose' and self.demo_pending:
             kind, self.demo_pending = self.demo_pending, None
             self.capture(kind)
         elif method in ('move', 'move_blended_route'):
-            self.log('Plane jog stopped on release' if method == 'move' and state.get('plane_jog_stopped') else
-                     'Blended transit completed' if method == 'move_blended_route' else 'Linear move completed')
+            if method == 'move' and self.orientation_alignment_pending:
+                self.orientation_alignment_pending = False
+                self.orientation = list(state['tcp'][3:])
+                self.saved_orientation = list(self.orientation)
+                self.orientation_label.setText(' / '.join(f'{value:.2f}°' for value in self.orientation))
+                self.log('TCP aligned perpendicular to the selected plane and orientation locked.')
+            else:
+                self.log('Plane jog stopped on release' if method == 'move' and state.get('plane_jog_stopped') else
+                         'Blended transit completed' if method == 'move_blended_route' else 'Linear move completed')
             if self.task_running:
                 self.task_index = (self.task_batch_end+1 if method == 'move_blended_route' else self.task_index+1)
                 # This short event-loop handoff is only scheduling slack. It
@@ -1270,7 +1281,7 @@ class MainWindow(QMainWindow):
         lock_reason = self.orientation_lock_block_reason()
         self.lock_button.setEnabled(lock_reason is None)
         self.lock_button.setToolTip(self.tr(lock_reason) if lock_reason else '')
-        self.orientation_guidance.setText(self.tr(lock_reason or 'Ready to lock the current tool orientation for the selected plane.'))
+        self.orientation_guidance.setText(self.tr(lock_reason or 'Ready to align TCP +Z perpendicular to the selected plane.'))
         plane = self.current_plane()
         if plane is not None and plane.reference != 'robot_base':
             self.position_limit_status.setText(self.tr('This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.'))
@@ -1539,27 +1550,75 @@ class MainWindow(QMainWindow):
         self.disarm()
 
     def lock_orientation(self):
+        """Compatibility entry point for older signal wiring and tests."""
+        self.align_orientation_to_plane()
+
+    def align_orientation_to_plane(self):
         reason = self.orientation_lock_block_reason()
         if reason:
             self.log(reason)
             return
+        if self.state is None or time.monotonic()-self.state_time >= 1.0:
+            self.log('Wait for fresh robot feedback before aligning TCP orientation.')
+            return
+        if not self.state['safe'] or any(self.state['errors']) or not self.state['enabled']:
+            self.log('Robot must be enabled and free of faults before automatic orientation alignment.')
+            return
+        if not self.state['stopped'] or not self.state['program_stopped'] or self.state['mode'] != 1:
+            self.log('Stop the robot and controller program, and select manual mode before automatic orientation alignment.')
+            return
+        if self.state['user'] != 0:
+            self.log('Select base workpiece 0 before automatic orientation alignment.')
+            return
+        plane = self.current_plane()
+        try:
+            orientation = perpendicular_tool_orientation(plane, self.state['tcp'][3:])
+            target = [*self.state['tcp'][:3], *orientation]
+            checked_sequence_target(self.state['tcp'], target)
+        except ValueError as exc:
+            self.log(error_message(exc))
+            return
         self.teach_enabled.setChecked(False)
         self.disarm()
-        self.capture('orientation')
+        # Do not leave an older manually locked attitude active while the new
+        # plane-normal orientation is still in flight.
+        self.orientation = None
+        self.orientation_label.setText(self.tr('Orientation not locked'))
+        # This deliberately rotates in place: preserve the live TCP position,
+        # ask the controller to execute the orientation change, then lock the
+        # measured result only after the worker confirms the move completed.
+        accepted = self.client.call('move', dict(
+            plane=asdict(plane), target=plane.from_base(target[:3]),
+            orientation=orientation, bounds=self.limits(), speed=self.speed.value(),
+            sequence='transfer'))
+        if accepted:
+            self.orientation_alignment_pending = True
+            self.orientation_guidance.setText(self.tr('Aligning TCP +Z to the plane normal at the current TCP position.'))
+            self.refresh()
+        else:
+            self.log('Wait for the current controller command to finish before aligning TCP orientation.')
 
     def orientation_lock_block_reason(self):
         if not self.connected:
-            return 'Connect to the robot before locking tool orientation.'
+            return 'Connect to the robot before aligning the TCP to the selected plane.'
         if self.client.busy:
-            return 'Wait for the current controller command to finish before locking tool orientation.'
+            return 'Wait for the current controller command to finish before aligning TCP orientation.'
         if self.active_jog:
-            return 'Release the jog button and wait for the robot to stop before locking tool orientation.'
+            return 'Release the jog button and wait for the robot to stop before aligning TCP orientation.'
         if not self.tool_applied:
             return 'Click “Apply saved TCP” below, or apply TCP in Tool calibration. The controller must confirm the saved tool slot and offset.'
         if self.current_plane() is None:
-            return 'Select a workplane before locking tool orientation.'
+            return 'Select a workplane before aligning the TCP to the plane.'
         if self.current_plane().reference != 'robot_base':
             return 'This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.'
+        if self.state is None or time.monotonic()-self.state_time >= 1.0:
+            return 'Wait for fresh robot feedback before aligning TCP orientation.'
+        if self.state.get('user') != 0:
+            return 'Select base workpiece 0 before automatic orientation alignment.'
+        if not self.state.get('safe') or any(self.state.get('errors', [])) or not self.state.get('enabled'):
+            return 'Robot must be enabled and free of faults before automatic orientation alignment.'
+        if not self.state.get('stopped') or not self.state.get('program_stopped') or self.state.get('mode') != 1:
+            return 'Stop the robot and controller program, and select manual mode before automatic orientation alignment.'
         return None
 
     def arm_changed(self, checked):
@@ -1574,7 +1633,7 @@ class MainWindow(QMainWindow):
                 (self.state is not None and self.state.get('user') == 0, 'Click “Use base workpiece 0” before enabling Cartesian motion.'),
                 (self.current_plane() is not None, 'Select a workplane before enabling Cartesian motion.'),
                 (self.current_plane() is not None and self.current_plane().reference == 'robot_base', 'This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.'),
-                (self.orientation is not None, 'Lock the current tool orientation after selecting the workplane.'),
+                (self.orientation is not None, 'Align the TCP perpendicular to the selected plane before enabling Cartesian motion.'),
                 (self.axes_verified.isChecked(), 'Review the plane directions and travel limits, then check “I verified this plane’s +X, +Y, +Z directions and travel limits”.'),
             ) if not ready), None)
             if missing:
@@ -1679,6 +1738,7 @@ class MainWindow(QMainWindow):
     def stop(self, *, reason=None):
         self.log('Stop requested: {reason}', reason=reason or Message('Manual stop request'))
         self.task_running = False
+        self.orientation_alignment_pending = False
         self.task_path = []
         self.repeat_direction = None
         self.active_jog = None
@@ -1821,7 +1881,7 @@ class MainWindow(QMainWindow):
             self.restore_calibration(data)
             if path != self.session_path:
                 self.session_dirty = True
-            self.log('Restored calibration from {path}. Connect to verify TCP, then lock orientation and verify limits before motion.', path=str(path))
+            self.log('Restored calibration from {path}. Connect to verify TCP, align TCP perpendicular to the selected plane, and verify limits before motion.', path=str(path))
         except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
             self.log('Cannot restore saved calibration: {reason}', reason=error_message(exc))
 

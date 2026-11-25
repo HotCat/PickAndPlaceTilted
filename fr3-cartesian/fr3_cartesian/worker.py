@@ -631,8 +631,11 @@ class Session:
                     if cancelled:
                         if feedback['program_stopped']:
                             return dict(feedback, plane_jog_stopped=True)
-                    elif (np.linalg.norm(np.array(feedback['tcp'][:3])-pose[:3]) < 0.02
-                          and (sequence is None or np.allclose(rotation(feedback['tcp'][3:]), rotation(pose[3:]), atol=.001, rtol=0))):
+                    position_tolerance = 0.02 if sequence is None else ROUTE_POSITION_TOLERANCE
+                    orientation_tolerance = .001 if sequence is None else ROUTE_ORIENTATION_TOLERANCE
+                    position_ok = np.linalg.norm(np.array(feedback['tcp'][:3])-pose[:3]) <= position_tolerance
+                    orientation_error = np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(pose[3:]))
+                    if position_ok and orientation_error <= orientation_tolerance:
                         return feedback
                 time.sleep(0.03)
             if cancelled:

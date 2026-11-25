@@ -24,6 +24,48 @@ def wait_until(app, condition, seconds=5):
     raise AssertionError('Timed out waiting for Qt worker result')
 
 
+def test_auto_plane_alignment_sends_in_place_rotation_and_locks_confirmed_orientation(tmp_path, monkeypatch):
+    from fr3_cartesian.geometry import rotation, perpendicular_tool_orientation
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'auto-align.ini'), QSettings.IniFormat))
+    calls = []
+    monkeypatch.setattr(window.client, 'call', lambda method, args: calls.append((method, args)) or True)
+    try:
+        plane = Plane.teach('tilted', [[300, 0, 200], [400, 20, 200], [280, 100, 210]])
+        window.planes = [plane]
+        window.sync_planes()
+        window.connected = True
+        window.tool_applied = True
+        window.source = 'simulation'
+        window.tool_result = {'tool': [0., 0., 0., 0., 0., 0.]}
+        window.state = Session().read()
+        window.state.update(tcp=[300, 0, 200, 0, 0, 0], safe=True, errors=[0, 0], enabled=True,
+                            stopped=True, program_stopped=True, mode=1, user=0, tool=1,
+                            tcp_verified=True, tool_offset=[0., 0., 0., 0., 0., 0.])
+        window.state_time = time.monotonic()
+        window.align_orientation_to_plane()
+        assert len(calls) == 1
+        method, args = calls[0]
+        expected = perpendicular_tool_orientation(plane, [0, 0, 0])
+        assert method == 'move'
+        assert args['target'] == pytest.approx([0, 0, 0])
+        np.testing.assert_allclose(rotation(expected)[:, 2], np.asarray(plane.basis)[:, 2], atol=1e-9)
+        assert args['orientation'] == pytest.approx(expected)
+        assert args['sequence'] == 'transfer'
+        assert window.orientation_alignment_pending
+
+        confirmed = dict(window.state, tcp=[300, 0, 200, *expected])
+        window.completed('move', confirmed)
+        assert window.orientation == pytest.approx(expected)
+        assert window.saved_orientation == pytest.approx(expected)
+        assert not window.orientation_alignment_pending
+        assert 'perpendicular' in window.messages.toPlainText().splitlines()[-1]
+    finally:
+        window.connected = False
+        window.close()
+
+
 @pytest.mark.parametrize('connected', [False, True])
 def test_failure_sends_stop_only_after_connection_was_established(tmp_path, monkeypatch, connected):
     app = QApplication.instance() or QApplication([])
@@ -217,7 +259,7 @@ def test_guided_simulator_workflow_and_stop(tmp_path, monkeypatch, language):
         window.send_step(2, 1)
         wait_until(app, lambda: not window.client.busy)
         assert np.linalg.norm(np.array(window.state['tcp'][:3])-before) > .9
-        assert window.state['tcp'][3:] == [180., 0., 0.]
+        assert window.state['tcp'][3:] == pytest.approx(window.orientation)
         if os.environ.get('FR3_TEST_SCREENSHOT'):
             from pathlib import Path
             screenshot = Path(os.environ['FR3_TEST_SCREENSHOT'])

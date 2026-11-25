@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
-from fr3_cartesian.geometry import Plane, calibrate_pivot, checked_target, rotation, rpy, tcp_from_flange, pose_to_base
+from fr3_cartesian.geometry import (Plane, calibrate_pivot, checked_target, rotation, rpy,
+                                    tcp_from_flange, pose_to_base, perpendicular_tool_orientation)
 
 
 def contact_poses():
@@ -37,6 +38,36 @@ def test_tilted_plane_has_correct_handedness_and_round_trip():
     pose = plane.pose()
     np.testing.assert_allclose(pose[:3], plane.origin)
     np.testing.assert_allclose(rotation(pose[3:]), plane.basis, atol=1e-10)
+
+
+def test_auto_plane_alignment_points_tcp_plus_z_along_nearest_plane_normal_and_preserves_roll():
+    plane = Plane.teach('tilted', [[100, 200, 300], [200, 200, 300], [100, 280, 360]])
+    current = [25, -15, 73]
+    current_rotation = rotation(current)
+    result = perpendicular_tool_orientation(plane, current)
+    aligned = rotation(result)
+    normal = np.asarray(plane.basis)[:, 2]
+    if np.dot(normal, current_rotation[:, 2]) < 0:
+        normal *= -1
+    np.testing.assert_allclose(aligned[:, 2], normal, atol=1e-9)
+    assert np.dot(aligned[:, 0], current_rotation[:, 0]) > 0
+    np.testing.assert_allclose(aligned.T @ aligned, np.eye(3), atol=1e-9)
+
+
+def test_auto_plane_alignment_uses_stable_fallback_when_current_tool_x_is_normal():
+    plane = Plane.teach('xy', [[0, 0, 0], [100, 0, 0], [0, 100, 0]])
+    # Current TCP +X is parallel to the plane normal, so its projection cannot
+    # determine roll; the helper must fall back to the current +Y/plane axes.
+    result = perpendicular_tool_orientation(plane, [0, 90, 0])
+    aligned = rotation(result)
+    assert abs(np.dot(aligned[:, 2], np.asarray(plane.basis)[:, 2])) == pytest.approx(1)
+    np.testing.assert_allclose(aligned.T @ aligned, np.eye(3), atol=1e-9)
+
+
+def test_auto_plane_alignment_rejects_legacy_plane_reference():
+    plane = Plane.teach('legacy', [[0, 0, 0], [100, 0, 0], [0, 100, 0]], 'legacy_workpiece_unknown')
+    with pytest.raises(ValueError, match='old coordinate-frame bug'):
+        perpendicular_tool_orientation(plane, [180, 0, 0])
 
 
 @pytest.mark.parametrize('points', [ [[0,0,0],[0,0,0],[0,100,0]], [[0,0,0],[100,0,0],[200,0,0]] ])
