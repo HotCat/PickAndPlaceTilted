@@ -1152,6 +1152,10 @@ class MainWindow(QMainWindow):
                      'Blended transit completed' if method == 'move_blended_route' else 'Linear move completed')
             if self.task_running:
                 self.task_index = (self.task_batch_end+1 if method == 'move_blended_route' else self.task_index+1)
+                # This short event-loop handoff is only scheduling slack. It
+                # does not model pickup/gripper latency; Pick and Place are
+                # already exact-stop operations, and the next worker command
+                # performs its own readiness/IK preflight before dispatch.
                 QTimer.singleShot(80, self.send_task_segment)
             elif self.plane_arrow_held and self.repeat_direction and self.arm.isChecked():
                 self.plane_repeat_timer.start(80)

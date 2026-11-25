@@ -683,9 +683,13 @@ class Session:
             time.sleep(.12)
             return self.read()
 
-        # Solve IK as a chain: each via point uses the preceding solution as
-        # its reference. Solving every point against the same live joints can
-        # switch wrist/elbow branches even when adjacent TCP poses are close.
+        # Transit is dispatched only after this full preflight. Each IK call is
+        # a synchronous controller RPC, so a route with several points adds
+        # visible latency after a Pick exact stop. The sequential RPCs are
+        # intentional: each via point references the preceding solution, which
+        # reduces wrist/elbow branch switching compared with solving every pose
+        # from the same live joints. This is computation/communication time,
+        # not a simulated pickup dwell.
         reference_joints = vector(state['joints'], 6).tolist()
         planned_joints = []
         for pose in checked:
@@ -698,6 +702,9 @@ class Session:
         segment_lengths = [float(np.linalg.norm(np.array(checked[0][:3])-np.array(state['tcp'][:3])))]
         segment_lengths.extend(float(np.linalg.norm(np.array(b[:3])-np.array(a[:3])))
                                for a, b in zip(checked, checked[1:]))
+        # Only after all route IK solutions are valid do we submit motion. The
+        # positive blend radii let the controller pass transit corners; the
+        # final blendR=-1 blocks until the exact Pick/Place endpoint is reached.
         for index, (pose, joints) in enumerate(zip(checked, planned_joints)):
             final = index == len(checked)-1
             if final:
