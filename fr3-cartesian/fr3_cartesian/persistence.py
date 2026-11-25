@@ -89,6 +89,7 @@ def decode_calibration(data):
     destination = vector(task.get('destination', [300., 0., 200., 180., 0., 0.]), 6).tolist()
     if any(abs(value) > 2000 for value in destination[:3]):
         raise OperatorValueError('Invalid saved calibration setting')
+    sequence_speed = integer(data.get('sequence_speed', 3), 1, 100)
     saved_tab = integer(data.get('active_tab', 0), 0, 4)
     # Before the pick/place tab existed, saved index 3 was the retired joystick
     # pendant. Reopen those calibration sessions on the useful XYZ panel.
@@ -104,7 +105,7 @@ def decode_calibration(data):
         xyz=dict(targets=targets, step=bounded(xyz.get('step', 1), .1, 10),
                  speed=bounded(xyz.get('speed', 3), .5, 10), hold=hold,
                  orientation_reference=orientation),
-        active_tab=saved_tab,
+        active_tab=saved_tab, sequence_speed=sequence_speed,
         jog=dict(joint_speed=integer(jog.get('joint_speed', 3), 1, 10),
                  tcp_speed=integer(jog.get('tcp_speed', 3), 1, 10),
                  joint_limit=bounded(jog.get('joint_limit', .5), .1, 10),

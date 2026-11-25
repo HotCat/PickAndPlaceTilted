@@ -646,6 +646,21 @@ class MainWindow(QMainWindow):
         row.addWidget(self.label('Array columns'))
         row.addWidget(self.task_columns)
         box.addLayout(row)
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(self.label('Pick/place TCP speed'))
+        self.task_speed = QSpinBox()
+        self.task_speed.setRange(1, 100)
+        self.task_speed.setValue(3)
+        self.task_speed.setSuffix(' %')
+        self.task_speed_slider = QSlider(Qt.Horizontal)
+        self.task_speed_slider.setRange(1, 100)
+        self.task_speed_slider.setValue(3)
+        self.task_speed.valueChanged.connect(self.task_speed_slider.setValue)
+        self.task_speed_slider.valueChanged.connect(self.task_speed.setValue)
+        speed_row.addWidget(self.task_speed_slider, 1)
+        speed_row.addWidget(self.task_speed)
+        box.addLayout(speed_row)
+        box.addWidget(self.paragraph('Controller MoveL velocity percentage for this sequence. Start at 1% and increase in small steps during supervised trials; the controller can still reject unsafe speeds.'))
         self.task_points = QTableWidget(6, 5)
         self.task_points.setHorizontalHeaderLabels([self.tr(text) for text in ('Row', 'Column', 'Plane X / mm', 'Plane Y / mm', 'Plane Z / mm')])
         self.task_points.horizontalHeader().setStretchLastSection(True)
@@ -982,7 +997,7 @@ class MainWindow(QMainWindow):
             self.log('Sequence blended transit {index}/{count}: {name}', index=self.task_index+1,
                      count=len(self.task_path), name=self.task_display_name(label))
             args = dict(plane=asdict(self.current_plane()), poses=[item[1] for item in batch],
-                        bounds=self.limits(), speed=self.speed.value(), blend_radius=10.)
+                        bounds=self.limits(), speed=self.task_speed.value(), blend_radius=10.)
             self.task_batch_end = end
             if not self.client.call('move_blended_route', args):
                 self.task_running = False
@@ -992,7 +1007,7 @@ class MainWindow(QMainWindow):
         self.log('Sequence move {index}/{count}: {name}', index=self.task_index+1,
                  count=len(self.task_path), name=self.task_display_name(name))
         plane_target = self.current_plane().from_base(pose[:3])
-        if not self.send_move(plane_target, speed=self.speed.value(), orientation=pose[3:],
+        if not self.send_move(plane_target, speed=self.task_speed.value(), orientation=pose[3:],
                               sequence='pick' if name.startswith('Pick ') else 'transfer'):
             self.task_running = False
             self.refresh()
@@ -1297,7 +1312,8 @@ class MainWindow(QMainWindow):
                                             part=key[0]*self.task_columns.value()+key[1]+1,
                                             row=key[0]+1, column=key[1]+1) if key is not None
                                       else self.tr('Select an array part to teach its independent transit route.'))
-        for widget in (self.task_rows, self.task_columns, self.task_points, *self.task_destination,
+        for widget in (self.task_rows, self.task_columns, self.task_speed, self.task_speed_slider,
+                       self.task_points, *self.task_destination,
                        self.task_waypoints, self.task_ack):
             widget.setEnabled(not self.client.busy and not self.task_running)
         self.task_review.setToolTip(self.tr(reason) if reason else '')
@@ -1676,7 +1692,7 @@ class MainWindow(QMainWindow):
     def setup_autosave(self):
         for widget in (self.residual, self.slot, self.physical_id, self.load_number,
                        self.workpiece_slot,
-                       self.step, self.speed, *self.targets, self.jog_speed, self.base_jog_speed,
+                       self.step, self.speed, self.task_speed, *self.targets, self.jog_speed, self.base_jog_speed,
                        self.joint_limit, self.base_linear_limit, self.base_rotation_limit,
                        *(widget for pair in self.bounds for widget in pair)):
             widget.valueChanged.connect(self.schedule_autosave)
@@ -1703,7 +1719,7 @@ class MainWindow(QMainWindow):
                     jog=dict(joint_speed=self.jog_speed.value(), tcp_speed=self.base_jog_speed.value(),
                              joint_limit=self.joint_limit.value(), linear_limit=self.base_linear_limit.value(),
                              rotation_limit=self.base_rotation_limit.value()),
-                    task=self.task_data(),
+                    sequence_speed=self.task_speed.value(), task=self.task_data(),
                     active_tab=self.tabs.currentIndex())
 
     def schedule_autosave(self, *_):
@@ -1761,6 +1777,7 @@ class MainWindow(QMainWindow):
             self.base_linear_limit.setValue(jog['linear_limit'])
             self.base_rotation_limit.setValue(jog['rotation_limit'])
             task = data['task']
+            self.task_speed.setValue(data.get('sequence_speed', 3))
             self.task_rows.setValue(task['rows'])
             self.task_columns.setValue(task['columns'])
             self.resize_task_array()

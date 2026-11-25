@@ -538,8 +538,9 @@ class Session:
             raise MoveRejected("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")
         if self.slot == 0:
             raise MoveRejected("Apply a calibrated tool before moving")
-        if not 0 < speed <= 10:
-            raise MoveRejected("Cartesian speed must be in (0, 10]%")
+        maximum_speed = 100 if sequence in ('pick', 'transfer') else 10
+        if not 0 < speed <= maximum_speed:
+            raise MoveRejected("Cartesian speed must be in (0, {maximum:g}]%", maximum=maximum_speed)
         if state['tool'] != self.slot:
             raise MoveRejected("Active controller tool {actual} differs from calibrated tool {expected}. Apply the saved TCP before moving.",
                                actual=state['tool'], expected=self.slot)
@@ -652,8 +653,8 @@ class Session:
             raise MoveRejected("This plane was captured with the old coordinate-frame bug. Load a recovered base-frame calibration or reteach the plane before using it.")
         if self.slot == 0:
             raise MoveRejected("Apply a calibrated tool before moving")
-        if not 0 < speed <= 10:
-            raise MoveRejected("Cartesian speed must be in (0, 10]%")
+        if not 0 < speed <= 100:
+            raise MoveRejected("Pick/place Cartesian speed must be in (0, 100]%")
         if state['tool'] != self.slot:
             raise MoveRejected("Active controller tool {actual} differs from calibrated tool {expected}. Apply the saved TCP before moving.",
                                actual=state['tool'], expected=self.slot)

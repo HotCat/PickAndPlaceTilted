@@ -393,6 +393,15 @@ def test_sequence_transfer_can_leave_plane_and_change_orientation():
     assert result['tcp'] == pytest.approx([*plane.origin, 180, 0, 0])
 
 
+def test_pick_place_sequence_accepts_selected_full_range_speed():
+    session, plane, state, calls = fake_plane_move()
+    session.move(asdict(plane), [0, 0, -60], [160, 20, 40], [[-10, 10]]*3, 35,
+                 sequence='transfer')
+    assert calls[0][1]['vel'] == 35
+    with pytest.raises(MoveRejected, match='10'):
+        session.move(asdict(plane), [0, 0, -60], [160, 20, 40], [[-10, 10]]*3, 11)
+
+
 @pytest.mark.parametrize('sequence,target,orientation,match', [
     ('pick', [0, 0, 11], [180, 0, 0], 'Pick point outside'),
     ('transfer', [0, 0, -101], [180, 0, 0], '100 mm cap'),
