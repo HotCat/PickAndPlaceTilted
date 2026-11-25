@@ -505,6 +505,8 @@
   "Transit blend radius must be between 0 and 25 mm": "中转平滑半径必须在 0 到 25 mm 之间",
   "Sequence blended transit {index}/{count}: {name}": "序列平滑中转 {index}/{count}：{name}",
   "Blended transit endpoint returned without stationary feedback": "平滑中转终点返回时机器人尚未确认静止",
+  "Blended transit endpoint did not report stationary feedback": "平滑中转终点未报告机器人已静止",
+  "Blended transit endpoint feedback is outside tolerance: position error {position_error:.3f} mm (limit {position_limit:.3f}), orientation error {orientation_error:.4f} (limit {orientation_limit:.4f}); actual xyz=[{actual}] target xyz=[{target}]": "平滑中转终点反馈超出容差：位置误差 {position_error:.3f} mm（限值 {position_limit:.3f}），姿态误差 {orientation_error:.4f}（限值 {orientation_limit:.4f}）；实际 xyz=[{actual}]，目标 xyz=[{target}]",
   "Blended transit route stopped before its final pick/place endpoint": "平滑中转路径在到达最终取放端点前停止",
   "A blended route needs at least one taught point and a final pick/place point": "平滑中转路径至少需要一个示教路点和一个取/放料终点",
   "Controller stopped or faulted during the blended transit route": "平滑中转路径期间控制器停止或报告故障",

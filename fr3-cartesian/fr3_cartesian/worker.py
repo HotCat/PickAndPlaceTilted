@@ -18,6 +18,8 @@ from .feedback import install_feedback_reader
 
 
 MOTION_RPC_TIMEOUT = 65.0
+ROUTE_POSITION_TOLERANCE = 1.0  # mm; controller feedback is not sub-0.1 mm repeatable
+ROUTE_ORIENTATION_TOLERANCE = 0.02  # rotation-matrix norm, approximately 1 degree
 
 
 class NoRetryTransport(xmlrpc.client.Transport):
@@ -710,17 +712,32 @@ class Session:
                 raise OperatorError('MoveL rejected a blended route point (FAIRINO error 74). Review/reset the controller fault in WebUI.')
             check(result, 'MoveL blended route')
 
-        # The last MoveL is blocking (blendR=-1), so it should return at rest.
-        feedback = self.read()
-        if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
-            raise OperatorError('Controller stopped or faulted during the blended transit route')
-        if not feedback['stopped']:
-            raise OperatorError('Blended transit endpoint returned without stationary feedback')
-        position_error = float(np.linalg.norm(np.array(feedback['tcp'][:3])-checked[-1][:3]))
-        orientation_error = float(np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(checked[-1][3:])))
-        if position_error > .02 or orientation_error > .001:
-            raise OperatorError('Blended transit route stopped before its final pick/place endpoint')
-        return feedback
+        # The last MoveL is blocking (blendR=-1), but the feedback socket can
+        # deliver one or two samples from just before the controller accepted
+        # the endpoint. Wait briefly for a settled sample before judging it.
+        deadline = time.monotonic() + 2.0
+        feedback = None
+        position_error = orientation_error = float('inf')
+        while time.monotonic() < deadline:
+            feedback = self.read()
+            if not feedback['safe'] or any(feedback['errors']) or not feedback['enabled']:
+                raise OperatorError('Controller stopped or faulted during the blended transit route')
+            position_error = float(np.linalg.norm(np.array(feedback['tcp'][:3])-checked[-1][:3]))
+            orientation_error = float(np.linalg.norm(rotation(feedback['tcp'][3:])-rotation(checked[-1][3:])))
+            if feedback['stopped'] and position_error <= ROUTE_POSITION_TOLERANCE and orientation_error <= ROUTE_ORIENTATION_TOLERANCE:
+                return feedback
+            time.sleep(.05)
+        if feedback is None or not feedback['stopped']:
+            raise OperatorError('Blended transit endpoint did not report stationary feedback')
+        raise OperatorError(
+            'Blended transit endpoint feedback is outside tolerance: '
+            'position error {position_error:.3f} mm (limit {position_limit:.3f}), '
+            'orientation error {orientation_error:.4f} (limit {orientation_limit:.4f}); '
+            'actual xyz=[{actual}] target xyz=[{target}]',
+            position_error=position_error, position_limit=ROUTE_POSITION_TOLERANCE,
+            orientation_error=orientation_error, orientation_limit=ROUTE_ORIENTATION_TOLERANCE,
+            actual=','.join(f'{value:.2f}' for value in feedback['tcp'][:3]),
+            target=','.join(f'{value:.2f}' for value in checked[-1][:3]))
 
     # Compatibility for a GUI process started before the MoveL transit rename.
     # Older clients send this method name; route them through the same blended
