@@ -43,6 +43,15 @@ def test_legacy_file_recomputes_calibration_and_supplies_xyz_defaults(document):
     assert restored['selected_plane'] == 'Pick plane'
     assert restored['xyz']['step'] == 1
     assert restored['xyz']['orientation_reference'] is None
+    assert restored['xyz']['coordinate_frame'] == 0
+
+
+def test_xyz_coordinate_frame_setting_is_validated_and_restored(document):
+    document['xyz']['coordinate_frame'] = 1
+    assert decode_calibration(document)['xyz']['coordinate_frame'] == 1
+    document['xyz']['coordinate_frame'] = 2
+    with pytest.raises(ValueError, match='Invalid saved calibration setting'):
+        decode_calibration(document)
 
 
 def test_legacy_robot_calibration_is_preserved_but_never_silently_relabelled_as_base(document):

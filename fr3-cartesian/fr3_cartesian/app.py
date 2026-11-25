@@ -553,6 +553,14 @@ class MainWindow(QMainWindow):
         self.plane_combo = QComboBox()
         self.plane_combo.currentIndexChanged.connect(self.motion_plane_changed)
         box.addWidget(self.plane_combo)
+        frame_row = QHBoxLayout()
+        frame_row.addWidget(self.label('Jog coordinate frame'))
+        self.motion_frame = QComboBox()
+        self.motion_frame.addItems(['Workpiece plane', 'Robot base'])
+        self.motion_frame.currentIndexChanged.connect(self.motion_frame_changed)
+        frame_row.addWidget(self.motion_frame)
+        box.addLayout(frame_row)
+        box.addWidget(self.paragraph('Choose Base for robot-base X/Y/Z, or Workpiece plane for the selected calibrated plane axes. The controller remains on base workpiece 0; the app transforms and checks jog targets against the selected plane.'))
         self.plane_readout = self.paragraph('Plane XYZ: —')
         box.addWidget(self.plane_readout)
         row = QHBoxLayout()
@@ -1215,7 +1223,10 @@ class MainWindow(QMainWindow):
                                         enabled=Message('Enabled' if self.state['enabled'] else 'Disabled'), errors=str(self.state['errors'])))
             plane = self.current_plane()
             if plane and plane.reference == 'robot_base':
-                self.plane_readout.setText(self.tr('Plane XYZ / mm: {xyz}', xyz=', '.join(f'{v:.3f}' for v in plane.from_base(p[:3]))))
+                coordinate_name = 'Base XYZ' if self.motion_frame.currentIndex() == 1 else 'Workpiece XYZ'
+                coordinates = p[:3] if self.motion_frame.currentIndex() == 1 else plane.from_base(p[:3])
+                self.plane_readout.setText(self.tr('{frame} / mm: {xyz}', frame=self.tr(coordinate_name),
+                                                   xyz=', '.join(f'{v:.3f}' for v in coordinates)))
             else:
                 self.plane_readout.setText(self.tr('Plane XYZ: —'))
             for index, label in enumerate(self.joint_labels):
@@ -1300,7 +1311,7 @@ class MainWindow(QMainWindow):
             # Leave pressed arrows enabled during an in-flight increment so release is delivered.
             if not (b.isDown() and self.connected and self.arm.isChecked()):
                 b.setEnabled(enabled)
-        for w in (self.plane_combo, self.step, self.speed, self.hold, self.slot, self.physical_id, self.load_number):
+        for w in (self.plane_combo, self.motion_frame, self.step, self.speed, self.hold, self.slot, self.physical_id, self.load_number):
             w.setEnabled(not self.arm.isChecked() and not self.client.busy)
         for w in (self.joint_limit, self.base_linear_limit, self.base_rotation_limit):
             w.setEnabled(not self.client.busy and self.active_jog is None)
@@ -1541,6 +1552,38 @@ class MainWindow(QMainWindow):
         i = self.plane_combo.currentIndex()
         return self.planes[i] if 0 <= i < len(self.planes) else None
 
+    def motion_coordinates(self):
+        """Return the live TCP translation in the selected XYZ jog frame."""
+        if self.state is None:
+            return None
+        plane = self.current_plane()
+        if plane is None:
+            return None
+        return (list(self.state['tcp'][:3]) if self.motion_frame.currentIndex() == 1
+                else plane.from_base(self.state['tcp'][:3]))
+
+    def motion_target_to_plane(self, target):
+        """Convert a user-entered jog target to calibrated plane coordinates."""
+        plane = self.current_plane()
+        if plane is None:
+            raise OperatorValueError('Select a workplane before Cartesian motion.')
+        return plane.from_base(target) if self.motion_frame.currentIndex() == 1 else list(target)
+
+    def motion_frame_changed(self, *_):
+        """Keep the typed destination fixed in base space when changing frames."""
+        plane = self.current_plane()
+        if plane is not None and hasattr(self, 'targets'):
+            target = [widget.value() for widget in self.targets]
+            converted = (plane.to_base(target) if self.motion_frame.currentIndex() == 1
+                         else plane.from_base(target))
+            for widget, value in zip(self.targets, converted):
+                widget.blockSignals(True)
+                widget.setValue(value)
+                widget.blockSignals(False)
+        self.axes_verified.setChecked(False)
+        self.disarm()
+        self.schedule_autosave()
+
     def motion_plane_changed(self, *_):
         self.orientation = None
         self.saved_orientation = None
@@ -1701,7 +1744,7 @@ class MainWindow(QMainWindow):
     def send_step(self, axis, direction):
         plane = self.current_plane()
         if plane and self.state:
-            xyz = plane.from_base(self.state['tcp'][:3])
+            xyz = self.motion_coordinates()
             xyz[axis] += direction * (1 if self.hold.isChecked() else self.step.value())
             return self.send_move(xyz, jog=self.plane_arrow_held)
         return False
@@ -1718,12 +1761,14 @@ class MainWindow(QMainWindow):
             plane = self.current_plane()
             orientation = self.orientation if orientation is None else orientation
             if sequence is None:
-                checked_target(plane, self.state['tcp'], target, orientation, self.limits())
+                plane_target = self.motion_target_to_plane(target)
+                checked_target(plane, self.state['tcp'], plane_target, orientation, self.limits())
             else:
+                plane_target = target
                 if sequence == 'pick':
                     check_pick_point(target, self.limits())
                 checked_sequence_target(self.state['tcp'], [*plane.to_base(target), *orientation])
-            args = dict(plane=asdict(plane), target=target, orientation=orientation,
+            args = dict(plane=asdict(plane), target=plane_target, orientation=orientation,
                         bounds=self.limits(), speed=self.speed.value() if speed is None else speed)
             if sequence is not None:
                 args['sequence'] = sequence
@@ -1778,6 +1823,7 @@ class MainWindow(QMainWindow):
                     selected_plane=plane.name if plane else None,
                     plane_draft=dict(name=self.plane_name.text(), points=self.plane_points, reference=self.draft_reference),
                     xyz=dict(step=self.step.value(), speed=self.speed.value(), hold=self.hold.isChecked(),
+                             coordinate_frame=self.motion_frame.currentIndex(),
                              targets=[w.value() for w in self.targets],
                              orientation_reference=self.orientation if self.orientation is not None else self.saved_orientation),
                     jog=dict(joint_speed=self.jog_speed.value(), tcp_speed=self.base_jog_speed.value(),
@@ -1834,6 +1880,9 @@ class MainWindow(QMainWindow):
             self.step.setValue(xyz['step'])
             self.speed.setValue(xyz['speed'])
             self.hold.setChecked(xyz['hold'])
+            self.motion_frame.blockSignals(True)
+            self.motion_frame.setCurrentIndex(xyz.get('coordinate_frame', 0))
+            self.motion_frame.blockSignals(False)
             jog = data['jog']
             self.jog_speed.setValue(jog['joint_speed'])
             self.base_jog_speed.setValue(jog['tcp_speed'])

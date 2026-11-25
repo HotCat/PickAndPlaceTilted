@@ -66,6 +66,56 @@ def test_auto_plane_alignment_sends_in_place_rotation_and_locks_confirmed_orient
         window.close()
 
 
+def test_xyz_coordinate_frame_toggle_converts_targets_and_keeps_controller_base_frame(tmp_path, monkeypatch):
+    from fr3_cartesian.worker import Session
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=QSettings(str(tmp_path/'coordinate-frame.ini'), QSettings.IniFormat))
+    calls = []
+    monkeypatch.setattr(window.client, 'call', lambda method, args: calls.append((method, args)) or True)
+    try:
+        plane = Plane.teach('tilted', [[100, 200, 300], [200, 200, 300], [100, 280, 360]])
+        window.planes = [plane]
+        window.sync_planes()
+        window.connected = True
+        window.tool_applied = True
+        window.orientation = [180, 0, 0]
+        window.state = Session().read()
+        window.state.update(tcp=[*plane.to_base([0, 0, 10]), 180, 0, 0], safe=True,
+                            errors=[0, 0], enabled=True, stopped=True, program_stopped=True,
+                            mode=1, user=0)
+        window.state_time = time.monotonic()
+        window.axes_verified.setChecked(True)
+
+        # Input starts in workpiece-plane coordinates. Switching to base must
+        # convert the edited target but preserve its physical destination.
+        workpiece_target = [12, 23, 31]
+        for widget, value in zip(window.targets, workpiece_target):
+            widget.setValue(value)
+        expected_base = plane.to_base(workpiece_target)
+        window.motion_frame.setCurrentIndex(1)
+        assert [widget.value() for widget in window.targets] == pytest.approx(expected_base)
+        assert window.motion_frame.currentText() == 'Robot base'
+
+        window.axes_verified.setChecked(True)
+        window.arm.setChecked(True)
+        assert window.arm.isChecked()
+        window.send_move(expected_base)
+        method, args = calls[-1]
+        assert method == 'move'
+        assert args['target'] == pytest.approx(workpiece_target)
+        assert args['plane']['name'] == plane.name
+        assert args.get('user', 0) == 0
+        assert window.state['user'] == 0
+
+        # Switching back converts the displayed target to plane millimetres.
+        window.motion_frame.setCurrentIndex(0)
+        assert [widget.value() for widget in window.targets] == pytest.approx(workpiece_target)
+        assert not window.arm.isChecked()
+    finally:
+        window.connected = False
+        window.close()
+
+
 @pytest.mark.parametrize('connected', [False, True])
 def test_failure_sends_stop_only_after_connection_was_established(tmp_path, monkeypatch, connected):
     app = QApplication.instance() or QApplication([])

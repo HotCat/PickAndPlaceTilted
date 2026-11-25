@@ -63,6 +63,7 @@ def decode_calibration(data):
     if selected is not None and selected not in {p.name for p in planes}:
         raise OperatorValueError('Invalid saved calibration setting')
     xyz = data.get('xyz', {})
+    coordinate_frame = integer(xyz.get('coordinate_frame', 0), 0, 1)
     targets = vector(xyz.get('targets', [0, 0, 0]), 3).tolist()
     if any(abs(v) > 2000 for v in targets):
         raise OperatorValueError('Invalid saved calibration setting')
@@ -102,7 +103,8 @@ def decode_calibration(data):
         load=integer(data['load'], 0, 99), bounds=bounds,
         workpiece_slot=integer(data.get('workpiece_slot', 1), 1, 14),
         plane_draft=dict(name=name, points=points, reference=reference(draft.get('reference', legacy_reference))), selected_plane=selected,
-        xyz=dict(targets=targets, step=bounded(xyz.get('step', 1), .1, 10),
+        xyz=dict(targets=targets, coordinate_frame=coordinate_frame,
+                 step=bounded(xyz.get('step', 1), .1, 10),
                  speed=bounded(xyz.get('speed', 3), .5, 10), hold=hold,
                  orientation_reference=orientation),
         active_tab=saved_tab, sequence_speed=sequence_speed,
