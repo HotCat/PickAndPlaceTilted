@@ -355,6 +355,15 @@ def test_simulated_blended_transit_ends_at_taught_place_pose():
     assert state['tcp'] == pytest.approx(destination[0])
 
 
+def test_legacy_spline_command_uses_blended_move_l_route(monkeypatch):
+    session = Session()
+    calls = []
+    monkeypatch.setattr(session, 'move_blended_route', lambda *args: calls.append(args) or {'stopped': True})
+    plane, poses, bounds = {'reference': 'robot_base'}, [[1, 2, 3, 0, 0, 0]], [[-5, 5]]*3
+    assert session.move_spline(plane, poses, bounds, 3, 7) == {'stopped': True}
+    assert calls == [(plane, poses, bounds, 3, 7)]
+
+
 @pytest.mark.parametrize('poses,blend,match', [
     ([], 10, 'at least one'),
     ([[301, 0, 200, 180, 0, 0]], 26, 'between 0 and 25'),

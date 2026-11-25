@@ -712,6 +712,12 @@ class Session:
             raise OperatorError('Blended transit route stopped before its final pick/place endpoint')
         return feedback
 
+    # Compatibility for a GUI process started before the MoveL transit rename.
+    # Older clients send this method name; route them through the same blended
+    # MoveL implementation so reconnecting does not produce "Unknown command".
+    def move_spline(self, plane, poses, bounds, speed, blend_radius=10.):
+        return self.move_blended_route(plane, poses, bounds, speed, blend_radius)
+
     def demo_pose(self, kind, index):
         if not self.sim:
             raise OperatorError("Demo poses are only available in simulation")
@@ -748,7 +754,7 @@ def main():
             sys.exit(1)
         return
     session = Session()
-    allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'move_blended_route', 'demo_pose', 'servo_start', 'servo_end'}
+    allowed = {'connect', 'read', 'capture', 'select_base_frame', 'apply_plane', 'apply_tool', 'verify_tool', 'start_jog', 'stop_jog', 'move', 'move_blended_route', 'move_spline', 'demo_pose', 'servo_start', 'servo_end'}
     inbox = CommandInput(sys.stdin.fileno())
     session.move_cancelled = inbox.cancelled
     next_tick, next_state = 0., 0.
