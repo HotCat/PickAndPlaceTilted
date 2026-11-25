@@ -17,10 +17,17 @@ from .velocity import TrackingGovernor, VelocityIntegrator, SERVO_PERIOD, INPUT_
 from .feedback import install_feedback_reader
 
 
+MOTION_RPC_TIMEOUT = 65.0
+
+
 class NoRetryTransport(xmlrpc.client.Transport):
+    def __init__(self, timeout=2.0):
+        super().__init__()
+        self.timeout = float(timeout)
+
     def make_connection(self, host):
         conn = super().make_connection(host)
-        conn.timeout = 2.0
+        conn.timeout = self.timeout
         return conn
 
     def request(self, host, handler, request_body, verbose=False):
@@ -73,9 +80,9 @@ class CommandInput:
         return cancelled
 
 
-def proxy(ip):
+def proxy(ip, timeout=2.0):
     return xmlrpc.client.ServerProxy(f"http://{ipaddress.IPv4Address(ip)}:20003",
-                                     transport=NoRetryTransport())
+                                     transport=NoRetryTransport(timeout))
 
 
 def check(result, name):
@@ -136,7 +143,10 @@ class Session:
             install_feedback_reader(Robot)
             self.robot = Robot.RPC(ip)
             print(f"Loaded FAIRINO SDK: {Robot.__file__}; {self.robot.GetSDKVersion()}", file=sys.stderr)
-            self.robot.robot = proxy(ip)
+            # MoveL(blendR=-1) blocks until the exact-stop endpoint is reached.
+            # Leave enough time for the robot to finish at the configured low
+            # teaching speed; the GUI watchdog will stop the worker at 70 s.
+            self.robot.robot = proxy(ip, timeout=MOTION_RPC_TIMEOUT)
             # Keep both the command and state channels from silently reconnecting.
             self.robot.reconnect = lambda: False
             if hasattr(self.robot, "SetReConnectParam"):

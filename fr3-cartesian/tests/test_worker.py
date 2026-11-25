@@ -35,6 +35,11 @@ def calibrated_session():
     return s, p
 
 
+def test_motion_rpc_transport_allows_blocking_move_l_but_stop_transport_stays_short():
+    assert NoRetryTransport(65).make_connection('controller:20003').timeout == 65
+    assert NoRetryTransport().make_connection('controller:20003').timeout == 2
+
+
 def test_simulated_calibration_to_plane_motion():
     s, p = calibrated_session()
     current = p.from_base(s.read()['tcp'][:3])
