@@ -175,6 +175,9 @@ class HikvisionCamera:
             "auto_exposure": None if auto_value is None else auto_value != 0,
             "reverse_x": self._bool_node("ReverseX"),
             "reverse_y": self._bool_node("ReverseY"),
+            "acquisition_geometry": {key: self._optional_int(key) for key in
+                                     ('Width', 'Height', 'OffsetX', 'OffsetY', 'BinningHorizontal',
+                                      'BinningVertical', 'DecimationHorizontal', 'DecimationVertical')},
         }
 
     def apply_parameters(self, values):
@@ -205,6 +208,12 @@ class HikvisionCamera:
         value = self.sdk.MVCC_INTVALUE_EX()
         _check(self._cam.MV_CC_GetIntValueEx(node, value), f"Read {node}")
         return int(value.nCurValue)
+
+    def _optional_int(self, node):
+        # Some devices do not expose binning/decimation nodes. Geometry metadata
+        # must not prevent those cameras opening; record absence explicitly.
+        value = self.sdk.MVCC_INTVALUE_EX()
+        return int(value.nCurValue) if self._cam.MV_CC_GetIntValueEx(node, value) == 0 else None
 
     def _float_node(self, node):
         value = self.sdk.MVCC_FLOATVALUE()

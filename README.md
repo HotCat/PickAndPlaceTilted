@@ -13,6 +13,7 @@ configuration, source paths and adding tools through JSON.
 | --- | --- | --- |
 | Tool launcher / 工具启动器 | `./launch-workbench.sh` or desktop shortcut | [English / 简体中文](launcher/README.md) |
 | MindVision / Hikvision aiming preview / 工业相机瞄准预览 | `./preview-camera.sh` (MindVision) or `./preview-camera.sh --backend hikvision` | [Launch, SDK setup and aiming notes / 启动说明](docs/camera-preview.md) |
+| Camera intrinsics / 相机内参标定 | Camera preview → **Intrinsic calibration / 相机内参标定** | [Chessboard capture and calibration / 棋盘采集与标定](docs/camera-intrinsics.md) |
 | Tilted-camera rectification / 倾斜相机校正 | `python app.py` | Camera calibration and settings are available in the application. |
 | PCB CAD registration / PCB CAD 配准 | `python tools/select_pcb_holes.py` | [Registration, recipes and Hikvision capture](docs/pcb_cad_localization.md) |
 | FAIRINO FR3 calibration and XYZ positioning / FR3 标定与 XYZ 定位 | From `fr3-cartesian/`: `.venv/bin/python -m fr3_cartesian` | [English](fr3-cartesian/README.md) · [简体中文](fr3-cartesian/README.zh-CN.md) |

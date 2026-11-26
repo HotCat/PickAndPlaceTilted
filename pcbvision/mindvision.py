@@ -179,7 +179,11 @@ class MindVisionCamera:
         if selected == -1:
             # Preserve a camera's existing custom ROI until a preset is chosen.
             choices.insert(0, {"id": -1, "label": f"{current.iWidth} × {current.iHeight} — current ROI"})
-        return {"resolutions": choices, "resolution_id": selected}
+        geometry_fields = ('iIndex', 'uBinSumMode', 'uBinAverageMode', 'uSkipMode', 'uResampleMask',
+                           'iHOffsetFOV', 'iVOffsetFOV', 'iWidthFOV', 'iHeightFOV', 'iWidth', 'iHeight',
+                           'iWidthZoomHd', 'iHeightZoomHd', 'iWidthZoomSw', 'iHeightZoomSw')
+        geometry = {key: int(getattr(current, key)) for key in geometry_fields if hasattr(current, key)}
+        return {"resolutions": choices, "resolution_id": selected, "acquisition_geometry": geometry}
 
     def apply_parameters(self, values):
         if "resolution_id" in values:

@@ -5,6 +5,11 @@ loading CAD, rectification, registration or robot control. Choose either SDK at
 launch. Device enumeration, acquisition and parameter writes run on one worker
 thread; the GUI never owns native camera buffers.
 
+Use **Intrinsic calibration / 相机内参标定…** in the preview to collect chessboard
+views, fit K/distortion, inspect pixel errors and export profiles. See the
+[intrinsic calibration guide / 内参标定说明](camera-intrinsics.md) for the verified
+11 × 8 inner-corner, 3 mm board and the collection workflow.
+
 ## Launch on this workstation / 本机启动
 
 ```bash
