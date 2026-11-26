@@ -143,8 +143,13 @@ class CameraWindow(QWidget):
     closed = Signal()
 
     def __init__(self, parent=None, camera_factory=_make_camera, *,
-                 camera_name="Hikvision", preview_only=False):
+                 camera_name="Hikvision", preview_only=False, device_serial="",
+                 auto_preview=False, log_stdout=False):
         super().__init__(parent, Qt.Window)
+        self.device_serial = device_serial
+        self.log_stdout = log_stdout
+        self._startup_stage = 'scan' if auto_preview else None
+        self._devices_received = False
         self.setWindowTitle(f"{camera_name} camera — " + ("fiducial aiming preview" if preview_only else "live view and snapshot"))
         self.resize(1100, 800 if preview_only else 720)
         self._devices = []
@@ -238,7 +243,7 @@ class CameraWindow(QWidget):
         self.worker.state_changed.connect(self._set_state)
         self.worker.preview_ready.connect(self._show_preview)
         self.worker.snapshot_ready.connect(self._deliver_snapshot)
-        self.worker.message.connect(self.status.setText)
+        self.worker.message.connect(self._message)
         self.worker.command_done.connect(self._command_done)
         self.worker.finished.connect(self._finish_close)
         self.refresh_button.clicked.connect(lambda: self._submit("scan"))
@@ -263,12 +268,40 @@ class CameraWindow(QWidget):
     def _command_done(self):
         self._busy = False
         self._update_controls()
+        if self._closing:
+            return
+        if self._startup_stage == 'scan':
+            self._startup_stage = None
+            if not self._devices_received:
+                return  # Preserve the SDK scan error instead of hiding it.
+            if 0 <= self.device_combo.currentIndex() < len(self._devices):
+                self._startup_stage = 'open'
+                self._open_camera()
+            else:
+                self._message(f"Camera {self.device_serial or '(unique device)'} not selected. Find cameras and select one manually. / 未找到指定相机，请手动选择。")
+        elif self._startup_stage == 'open':
+            self._startup_stage = None
+            if self._is_open:
+                self._submit('start')
+
+    @Slot(str)
+    def _message(self, text):
+        self.status.setText(text)
+        if self.log_stdout:
+            print(f'{time.strftime("%H:%M:%S")}  {text}', flush=True)
 
     @Slot(object)
     def _set_devices(self, devices):
+        self._devices_received = True
         self._devices = devices
         self.device_combo.clear()
         self.device_combo.addItems([item["name"] for item in devices])
+        if self.device_serial:
+            index = next((i for i, d in enumerate(devices) if d.get('sn') == self.device_serial), -1)
+            self.device_combo.setCurrentIndex(index)
+        elif self._startup_stage == 'scan' and len(devices) != 1:
+            # Never choose an arbitrary device when several cameras are present.
+            self.device_combo.setCurrentIndex(-1)
 
     def _open_camera(self):
         index = self.device_combo.currentIndex()

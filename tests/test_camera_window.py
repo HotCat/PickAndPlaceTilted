@@ -254,6 +254,32 @@ class CameraWindowTests(unittest.TestCase):
         self.assertFalse(self.fake.applied["auto_exposure"])
         self.assertNotIn(threading.get_ident(), self.fake.thread_ids)
 
+    def test_launcher_autostart_uses_exact_serial_and_runs_on_worker(self):
+        fake = FakeCamera()
+        other = CameraWindow(camera_factory=lambda: fake, device_serial='123', auto_preview=True)
+        worker = other.worker
+        try:
+            other.show()
+            self.wait_until(lambda: other._is_live and not other._preview_image.isNull())
+            self.assertTrue(fake.is_open)
+            self.assertNotIn(threading.get_ident(), fake.thread_ids)
+        finally:
+            other.close()
+            self.wait_until(lambda: not worker.isRunning())
+
+    def test_launcher_wrong_serial_never_opens_another_camera(self):
+        fake = FakeCamera()
+        other = CameraWindow(camera_factory=lambda: fake, device_serial='missing', auto_preview=True)
+        worker = other.worker
+        try:
+            self.wait_until(lambda: not other._busy)
+            self.assertFalse(fake.is_open)
+            self.assertEqual(other.device_combo.currentIndex(), -1)
+            self.assertIn('not selected', other.status.text())
+        finally:
+            other.close()
+            self.wait_until(lambda: not worker.isRunning())
+
     def test_main_window_owns_single_camera_window_and_waits_for_camera_on_exit(self):
         root = HoleSelector()
         root.show()

@@ -38,8 +38,13 @@ def number(low, high, value, decimals=2, suffix=''):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings=None, language=None, session_path=None):
+    def __init__(self, settings=None, language=None, session_path=None, *,
+                 robot_ip=None, sdk_folder=None, backend=None, log_stdout=False):
         super().__init__()
+        self.launch_robot_ip = robot_ip
+        self.launch_sdk_folder = sdk_folder
+        self.launch_backend = backend
+        self.log_stdout = log_stdout
         self.settings = settings if settings is not None else QSettings('FR3Cartesian', 'Studio')
         storage_root = Path(self.settings.fileName()).parent if settings is not None else ROOT
         self.session_path = Path(session_path) if session_path is not None else storage_root/'calibration-session.json'
@@ -320,11 +325,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         self.mode = QComboBox()
         self.mode.addItems(['Simulator', 'Real FR3'])
-        saved_backend = str(self.settings.value('connection/backend', 'robot')).lower()
+        saved_backend = self.launch_backend or str(self.settings.value('connection/backend', 'robot')).lower()
         self.mode.setCurrentIndex(0 if saved_backend in ('simulator', 'simulation', '0') else 1)
         self.mode.currentIndexChanged.connect(self.backend_changed)
-        self.ip = QLineEdit('192.168.58.2')
-        self.sdk = QLineEdit(str(ROOT / 'vendor'))
+        self.ip = QLineEdit(self.launch_robot_ip or '192.168.58.2')
+        self.sdk = QLineEdit(str(self.launch_sdk_folder or ROOT / 'vendor'))
         form.addRow(self.label('Backend'), self.mode)
         self.mode.setToolTip(self.tr('Changing the backend disconnects the current session.'))
         form.addRow(self.label('Robot IP'), self.ip)
@@ -743,6 +748,8 @@ class MainWindow(QMainWindow):
         if text:
             message = text if isinstance(text, Message) else Message(text, values)
             self.log_entries.append((time.strftime('%H:%M:%S'), message))
+            if self.log_stdout:
+                print(f'{time.strftime("%H:%M:%S")}  {self.tr(message)}', flush=True)
             self.render_logs()
 
     def resize_task_array(self, *_):
@@ -2028,10 +2035,21 @@ def main():
     parser.add_argument('--smoke-test', action='store_true', help='Create the UI and exit without connecting')
     parser.add_argument('--screenshot', type=Path, help='Save a screenshot during the smoke test')
     parser.add_argument('--language', choices=LANGUAGES, help='Initial display language (en or zh_CN)')
+    parser.add_argument('--robot-ip', help='Initial robot address; does not connect')
+    parser.add_argument('--sdk-folder', type=Path, help='FAIRINO Python SDK directory')
+    parser.add_argument('--session-path', type=Path, help='Existing calibration/session file')
+    parser.add_argument('--backend', choices=('robot', 'simulator'), help='Initial backend; starts disconnected')
+    parser.add_argument('--log-stdout', action='store_true', help='Also publish operator messages to launcher logs')
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setStyle('Fusion')
-    window = MainWindow(language=args.language)
+    window = MainWindow(language=args.language, session_path=args.session_path,
+                        robot_ip=args.robot_ip, sdk_folder=args.sdk_folder,
+                        backend=args.backend, log_stdout=args.log_stdout)
+    import os
+    if os.environ.get('WORKBENCH_MANAGED') == '1':
+        from launcher.runtime import install_close_handler
+        install_close_handler(app)
     window.show()
     if args.smoke_test:
         def finish():

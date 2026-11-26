@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "id": "camera-preview",
+      "instance_key": "camera-preview",
+      "name": "Camera preview / 相机预览",
+      "description": "MindVision or Hikvision live view, camera presets, exposure and fiducial crosshair.",
+      "command": [
+        "{python}",
+        "-u",
+        "-m",
+        "pcbvision.preview",
+        "--backend",
+        "{camera_backend}",
+        "--device",
+        "{camera_serial}",
+        "--log-stdout"
+      ],
+      "cwd": "{repo}",
+      "python_paths": [
+        "{repo}"
+      ],
+      "environment": {
+        "WORKBENCH_MANAGED": "1"
+      },
+      "parameters": [
+        {
+          "key": "camera_backend",
+          "label": "Camera SDK / 相机类型",
+          "type": "choice",
+          "choices": [
+            "mindvision",
+            "hikvision"
+          ],
+          "default": "mindvision"
+        },
+        {
+          "key": "camera_serial",
+          "label": "Camera serial / 相机序列号",
+          "type": "string",
+          "default": "051020320321",
+          "required": false,
+          "help": "Use the serial shown in preview. Blank selects the sole detected camera; multiple cameras require selection.",
+          "device_selector": true
+        },
+        {
+          "key": "auto_preview",
+          "label": "Open selected camera on launch / 启动后打开相机",
+          "type": "boolean",
+          "default": true,
+          "env": "PICKPLACE_CAMERA_AUTO_PREVIEW"
+        },
+        {
+          "key": "sdk_library",
+          "label": "MindVision library / 动态库",
+          "type": "path",
+          "default": "/usr/lib/libMVSDK.so",
+          "env": "MINDVISION_SDK_LIBRARY"
+        },
+        {
+          "key": "hikvision_root",
+          "label": "Hikvision SDK folder / 海康 SDK",
+          "type": "path",
+          "default": "/opt/MVS",
+          "env": "HIKVISION_MVS_ROOT",
+          "path_kind": "directory"
+        },
+        {
+          "key": "python",
+          "label": "Python interpreter / 解释器",
+          "type": "path",
+          "default": "{repo}/.venv-camera/bin/python"
+        }
+      ],
+      "values": {},
+      "device_discovery": {
+        "parameter": "camera_serial",
+        "command": [
+          "{python}",
+          "-u",
+          "-m",
+          "pcbvision.preview",
+          "--backend",
+          "{camera_backend}",
+          "--list-devices-json"
+        ]
+      },
+      "exclusive_module": "pcbvision.preview"
+    },
+    {
+      "id": "fr3-studio",
+      "instance_key": "fr3-studio",
+      "name": "FR3 / Cartesian Studio",
+      "description": "TCP and workplane calibration, teaching and pick/place. Starts disconnected; connect inside the studio.",
+      "command": [
+        "{python}",
+        "-u",
+        "-m",
+        "fr3_cartesian",
+        "--robot-ip",
+        "{robot_ip}",
+        "--backend",
+        "{backend}",
+        "--sdk-folder",
+        "{sdk_folder}",
+        "--session-path",
+        "{session_path}",
+        "--language",
+        "{language}",
+        "--log-stdout"
+      ],
+      "cwd": "{repo}/fr3-cartesian",
+      "python_paths": [
+        "{repo}/fr3-cartesian",
+        "{repo}"
+      ],
+      "environment": {
+        "WORKBENCH_MANAGED": "1"
+      },
+      "parameters": [
+        {
+          "key": "robot_ip",
+          "label": "Robot IP / 机器人 IP",
+          "type": "ipv4",
+          "default": "192.168.58.2"
+        },
+        {
+          "key": "backend",
+          "label": "Robot backend / 后端",
+          "type": "choice",
+          "choices": [
+            "robot",
+            "simulator"
+          ],
+          "default": "robot"
+        },
+        {
+          "key": "language",
+          "label": "Studio language / 语言",
+          "type": "choice",
+          "choices": [
+            "en",
+            "zh_CN"
+          ],
+          "default": "en"
+        },
+        {
+          "key": "sdk_folder",
+          "label": "FAIRINO SDK folder / SDK 目录",
+          "type": "path",
+          "default": "{robot_home}/vendor",
+          "path_kind": "directory"
+        },
+        {
+          "key": "session_path",
+          "label": "Calibration session / 标定文件",
+          "type": "path",
+          "default": "{robot_home}/calibration-session.json",
+          "help": "Uses the existing saved calibration file; launcher never copies or overwrites it."
+        },
+        {
+          "key": "python",
+          "label": "Python interpreter / 解释器",
+          "type": "path",
+          "default": "{robot_home}/.venv/bin/python"
+        }
+      ],
+      "values": {},
+      "exclusive_module": "fr3_cartesian"
+    }
+  ]
+}

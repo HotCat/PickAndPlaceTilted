@@ -24,6 +24,24 @@ def wait_until(app, condition, seconds=5):
     raise AssertionError('Timed out waiting for Qt worker result')
 
 
+def test_launcher_initial_settings_and_stdout_do_not_connect_robot(tmp_path, capsys):
+    app = QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path/'preferences.ini'), QSettings.IniFormat)
+    window = MainWindow(settings=settings, robot_ip='192.168.58.99',
+                        sdk_folder=tmp_path/'sdk', backend='simulator',
+                        session_path=tmp_path/'session.json', log_stdout=True)
+    try:
+        assert window.ip.text() == '192.168.58.99'
+        assert window.sdk.text() == str(tmp_path/'sdk')
+        assert window.mode.currentIndex() == 0
+        assert not window.connected and window.client.process is None
+        window.log('launcher test message')
+        assert 'launcher test message' in capsys.readouterr().out
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_auto_plane_alignment_sends_in_place_rotation_and_locks_confirmed_orientation(tmp_path, monkeypatch):
     from fr3_cartesian.geometry import rotation, perpendicular_tool_orientation
     from fr3_cartesian.worker import Session

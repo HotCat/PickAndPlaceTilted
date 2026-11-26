@@ -4,8 +4,14 @@ Vision and robot commissioning tools for a pick-and-place project. The camera
 workbenches and robot application currently run independently; camera registration
 does not send robot motion.
 
+**Start from the desktop:** open **Pick & Place Workbench / 取放工作台启动器** to
+configure, start/restart tools and view live logs. Install with
+`./tools/install-workbench.sh`; see the [launcher guide](launcher/README.md) for
+configuration, source paths and adding tools through JSON.
+
 | Component | Entry point | Guide |
 | --- | --- | --- |
+| Tool launcher / 工具启动器 | `./launch-workbench.sh` or desktop shortcut | [English / 简体中文](launcher/README.md) |
 | MindVision / Hikvision aiming preview / 工业相机瞄准预览 | `./preview-camera.sh` (MindVision) or `./preview-camera.sh --backend hikvision` | [Launch, SDK setup and aiming notes / 启动说明](docs/camera-preview.md) |
 | Tilted-camera rectification / 倾斜相机校正 | `python app.py` | Camera calibration and settings are available in the application. |
 | PCB CAD registration / PCB CAD 配准 | `python tools/select_pcb_holes.py` | [Registration, recipes and Hikvision capture](docs/pcb_cad_localization.md) |
