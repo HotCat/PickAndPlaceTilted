@@ -25,7 +25,14 @@ def _Init():
 		if getattr(sys, 'frozen', False):
 			sdk_path = os.path.join(sys._MEIPASS, 'libMVSDK.so')
 		else:
-			sdk_path = 'libMVSDK.so'
+			# Load an unpacked SDK without copying libraries into /lib. The preview
+			# launcher sets MINDVISION_SDK_ROOT before this module is imported.
+			root = os.environ.get('MINDVISION_SDK_ROOT')
+			arch = {'x86_64': 'x64', 'amd64': 'x64', 'aarch64': 'arm64',
+			        'arm64': 'arm64', 'armv7l': 'arm'}.get(platform.machine().lower(), 'x86')
+			sdk_path = os.environ.get('MINDVISION_SDK_LIBRARY') or (
+				os.path.join(os.path.expanduser(root), 'lib', arch, 'libMVSDK.so')
+				if root else 'libMVSDK.so')
 		_sdk = cdll.LoadLibrary(sdk_path)
 		CALLBACK_FUNC_TYPE = CFUNCTYPE
 

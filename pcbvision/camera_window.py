@@ -1,4 +1,4 @@
-"""Dedicated Hikvision live/capture window; all SDK access stays in one thread."""
+"""Industrial camera live/capture window; all SDK access stays in one thread."""
 from __future__ import annotations
 
 import queue
@@ -8,7 +8,7 @@ import time
 import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Qt, Signal, Slot
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
@@ -140,9 +140,10 @@ class CameraWindow(QWidget):
     snapshot_ready = Signal(object)
     closed = Signal()
 
-    def __init__(self, parent=None, camera_factory=_make_camera):
+    def __init__(self, parent=None, camera_factory=_make_camera, *,
+                 camera_name="Hikvision", preview_only=False):
         super().__init__(parent, Qt.Window)
-        self.setWindowTitle("Hikvision camera — live view and snapshot")
+        self.setWindowTitle(f"{camera_name} camera — " + ("fiducial aiming preview" if preview_only else "live view and snapshot"))
         self.resize(1100, 720)
         self._devices = []
         self._is_open = False
@@ -164,6 +165,10 @@ class CameraWindow(QWidget):
         self.disconnect_button = QPushButton("Close camera")
         self.live_button = QPushButton("Start live view")
         self.snapshot_button = QPushButton("Snapshot → registration")
+        self.snapshot_button.setVisible(not preview_only)
+        self.crosshair = QCheckBox("Center crosshair / 中心十字线")
+        self.crosshair.setChecked(preview_only)
+        self.crosshair.toggled.connect(self._paint_preview)
         self.read_button = QPushButton("Read parameters")
         self.apply_button = QPushButton("Apply parameters")
         self.parameters_group = QGroupBox("Camera parameters")
@@ -178,6 +183,9 @@ class CameraWindow(QWidget):
             spin.setDecimals(3)
             spin.setSuffix(suffix)
             spin.setKeyboardTracking(False)
+            if camera_name == "MindVision" and key in ("gain", "gamma"):
+                spin.setDecimals(0)
+                spin.setSuffix(" SDK units" if key == "gain" else "")
             self.float_controls[key] = spin
             form.addRow(label, spin)
         self.reverse_x = QCheckBox("Mirror X")
@@ -194,7 +202,12 @@ class CameraWindow(QWidget):
                        self.live_button, self.snapshot_button):
             sidebar.addWidget(button)
         sidebar.addWidget(self.parameters_group)
-        hint = QLabel("Snapshots use a fresh full-resolution frame and go directly to the main image area. Click Register there to apply the CAD overlay.")
+        sidebar.addWidget(self.crosshair)
+        hint = QLabel(
+            "Preview only / 仅预览。Align the fiducial with the center crosshair. "
+            "Camera settings do not move the robot. The optical center is not a calibrated TCP or hand–eye transform."
+            if preview_only else
+            "Snapshots use a fresh full-resolution frame and go directly to the main image area. Click Register there to apply the CAD overlay.")
         hint.setWordWrap(True)
         hint.setMaximumWidth(300)
         sidebar.addWidget(hint)
@@ -310,8 +323,19 @@ class CameraWindow(QWidget):
 
     def _paint_preview(self):
         if not self._preview_image.isNull():
-            self.preview.setPixmap(QPixmap.fromImage(self._preview_image).scaled(
-                self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            pixmap = QPixmap.fromImage(self._preview_image).scaled(
+                self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if self.crosshair.isChecked():
+                # Paint on the display pixmap, never on image/snapshot pixels.
+                painter = QPainter(pixmap)
+                x, y = pixmap.width() // 2, pixmap.height() // 2
+                for color, width in ((QColor("black"), 3), (QColor("#00ff70"), 1)):
+                    painter.setPen(QPen(color, width))
+                    painter.drawLine(x - 35, y, x + 35, y)
+                    painter.drawLine(x, y - 35, x, y + 35)
+                    painter.drawEllipse(x - 10, y - 10, 20, 20)
+                painter.end()
+            self.preview.setPixmap(pixmap)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

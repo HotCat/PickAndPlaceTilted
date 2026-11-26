@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
+.venv-camera/
 
 # Calibration data (generated per camera setup)
 calib_samples/

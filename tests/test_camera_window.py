@@ -212,6 +212,25 @@ class CameraWindowTests(unittest.TestCase):
             other.close()
             self.wait_until(lambda: not other_worker.isRunning())
 
+    def test_preview_only_crosshair_does_not_modify_image_pixels(self):
+        other = CameraWindow(camera_factory=FakeCamera, camera_name="MindVision", preview_only=True)
+        worker = other.worker
+        try:
+            other.show()
+            self.wait_until(lambda: not other._busy)
+            self.assertFalse(other.snapshot_button.isVisible())
+            self.assertTrue(other.crosshair.isChecked())
+            self.assertIn("MindVision", other.windowTitle())
+            frame = np.full((120, 160, 3), 23, np.uint8)
+            other._show_preview(frame)
+            original = other._preview_image.copy()
+            other.crosshair.setChecked(False)
+            self.assertEqual(other._preview_image, original)
+            self.assertTrue(np.all(frame == 23))
+        finally:
+            other.close()
+            self.wait_until(lambda: not worker.isRunning())
+
     def test_main_window_owns_single_camera_window_and_waits_for_camera_on_exit(self):
         root = HoleSelector()
         root.show()

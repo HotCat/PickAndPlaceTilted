@@ -1,0 +1,6 @@
+# Keep this preview runtime independent of the robot environment. OpenCV only
+# processes images; PySide6 owns all windows (no competing OpenCV Qt plugins).
+PySide6==6.8.3
+opencv-python-headless==4.11.0.86
+numpy>=1.26,<3
+pyyaml>=6.0

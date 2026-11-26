@@ -1,0 +1,2 @@
+# Preserve the vendor wrapper's CRLF convention when checking added lines.
+driver/mvsdk.py whitespace=cr-at-eol
