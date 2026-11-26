@@ -15,9 +15,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Industrial-camera aiming preview (no robot connection)")
     parser.add_argument("--backend", choices=("mindvision", "hikvision"), default="mindvision")
     parser.add_argument("--sdk-root", type=Path, help="Unpacked MindVision SDK directory containing lib/x64/libMVSDK.so")
+    parser.add_argument("--sdk-library", type=Path, help="Exact MindVision shared library (default: installed libMVSDK.so, same as GTK_demo)")
     args = parser.parse_args(argv)
     if args.sdk_root:
         os.environ["MINDVISION_SDK_ROOT"] = str(args.sdk_root.expanduser().resolve())
+    if args.sdk_library:
+        os.environ["MINDVISION_SDK_LIBRARY"] = str(args.sdk_library.expanduser().resolve())
 
     # Import OpenCV before Qt, then remove opencv-python's conflicting Qt plugin
     # hint. This window uses PySide6's Qt6 plugins; OpenCV's Qt5 plugins can abort

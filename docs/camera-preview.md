@@ -12,18 +12,50 @@ cd /home/hotcat/Downloads/fr3robot/PickAndPlaceTilted
 ./preview-camera.sh
 ```
 
-The default backend is **MindVision**. The launcher uses the supplied SDK at
-`~/Downloads/new3dvision/library/hopencv/mindvision2/usv-multiSensor-driver-master/linuxSDK_V2.1.0.6/`.
-It loads `lib/x64/libMVSDK.so` directly on this x86-64 workstation: no copying to
-`/lib`, administrator launch or system SDK installation is needed.
+The default backend is **MindVision**, using the **installed `libMVSDK.so`**, the
+same library loaded by the working GTK demo (`/usr/lib/libMVSDK.so` here).
+The library under the unpacked `linuxSDK_V2.1.0.6/lib/x64/` has a different hash
+and finds zero devices on this workstation, while the installed version detects
+the `MV-GE502M-T`. The launcher therefore no longer forces the unpacked SDK root.
+No system files are modified. The scan status shows the library being loaded.
 
-Select the device → **Open camera** → **Start live view**. Use exposure, auto
-exposure, gain, gamma and mirror controls as supported by the device. Click
+默认使用 GTK 演示程序所用的已安装 SDK。本机压缩包内的库与已安装库不同，前者无法
+检测到这台相机，因此启动脚本已取消强制使用该目录。
+
+Select the device → **Open camera** → **Start live view**. Use resolution, exposure,
+auto exposure, gain, gamma, contrast and mirror controls. Click
 **Apply parameters** to change them. Opening does not overwrite exposure or gain.
 MindVision gain uses native integer SDK units; Hikvision gain uses dB.
 
+For **manual exposure**, click **Manual exposure / 手动曝光** (or uncheck Auto
+exposure), enter Exposure in microseconds, then click **Apply parameters**.
+Gamma and contrast use the same native scales as GTK_demo (100 is neutral on
+this camera). Applying them selects the SDK's parameter-generated LUT so their
+changes affect the processed image.
+
+The **Resolution / 分辨率** list comes from `CameraGetCapability`, just like
+GTK_demo. It selects a real acquisition preset with its complete ROI/binning
+configuration, not just display resizing. Acquisition pauses while settings are
+applied and then resumes if it was running. This GE502M exposes:
+
+| Preset | Mode |
+| --- | --- |
+| 2592 × 1944 | Full 5 MP |
+| 2048 × 1536 | ROI |
+| 1920 × 1080 | ROI |
+| 1280 × 1024 | ROI |
+| 640 × 480 | ROI |
+| 1296 × 972 | BIN2X2 |
+
+The preview image is scaled to fit the window; native acquisition uses the
+selected preset. ROI can crop the field of view. Recheck the fiducial/crosshair
+alignment when changing presets; a resolution change is not a camera calibration.
+
 选择相机 → **Open camera（打开）** → **Start live view（实时预览）**。
-可调整曝光、自动曝光、增益、伽马和镜像，然后点击 **Apply parameters** 应用。
+可选择分辨率，调整曝光、自动曝光、增益、伽马、对比度和镜像，然后点击
+**Apply parameters** 应用。手动曝光请点击 **Manual exposure / 手动曝光**，输入
+微秒值后应用；此操作关闭自动曝光。分辨率列表与 GTK_demo 一样来自相机 SDK，实际
+修改采集模式，而非仅缩放显示。ROI 可能裁剪视野，切换后请重新检查十字线对准。
 默认显示中心十字线，便于粗略对准标记；十字线只叠加在显示画面上。
 
 For the existing Hikvision camera / 使用现有海康相机：
@@ -54,6 +86,8 @@ To use a different SDK / 指定其他 SDK：
 
 ```bash
 ./preview-camera.sh --sdk-root /path/to/linuxSDK_V2.1.0.6
+# Force the same exact library as this workstation's GTK demo:
+./preview-camera.sh --sdk-library /usr/lib/libMVSDK.so
 # Equivalent direct entry point:
 .venv-camera/bin/python -m pcbvision.preview --backend mindvision --sdk-root /path/to/linuxSDK
 ```
@@ -83,10 +117,10 @@ The SDK's `88-mvusb.rules` may be needed on systems without camera USB permissio
 it is not installed automatically. SDK loading and finding a physical device are
 separate checks.
 
-At implementation verification the supplied MindVision SDK loaded successfully
-but enumerated zero devices. Hikvision MVS enumerated `GE502M` and the USB
-`MV-CB013-20UM-C`; the latter delivered a 1280 × 1024 BGR live frame. A physical
-MindVision acquisition still needs verification when its device is discoverable.
+Verified MindVision acquisition from `MV-GE502M-T (051020320321)`, a monochrome
+2592 × 1944 camera, using the installed SDK. Close GTK_demo before opening it in
+our preview: camera acquisition requires exclusive access. The unrelated USB
+Hikvision `MV-CB013-20UM-C` remains available through the Hikvision backend.
 
 ## Tests
 

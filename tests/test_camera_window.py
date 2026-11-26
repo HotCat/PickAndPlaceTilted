@@ -231,6 +231,29 @@ class CameraWindowTests(unittest.TestCase):
             other.close()
             self.wait_until(lambda: not worker.isRunning())
 
+    def test_resolution_contrast_and_manual_exposure_are_submitted_to_worker(self):
+        self.open_camera()
+        parameters = dict(self.window._capabilities)
+        parameters.update({"contrast": {"value": 100, "min": 0, "max": 200},
+                           "resolutions": [{"id": 0, "label": "2592 × 1944"},
+                                           {"id": 1, "label": "1296 × 972 BIN2X2"}],
+                           "resolution_id": 0})
+        self.window._set_parameters(parameters)
+        self.window.auto_exposure.setChecked(True)
+        self.assertFalse(self.window.float_controls["exposure"].isEnabled())
+        self.window.manual_exposure_button.click()
+        self.assertTrue(self.window.float_controls["exposure"].isEnabled())
+        self.window.float_controls["exposure"].setValue(12000.)
+        self.window.float_controls["contrast"].setValue(110)
+        self.window.resolution_combo.setCurrentIndex(1)
+        self.window.apply_button.click()
+        self.wait_until(lambda: self.fake.applied is not None and not self.window._busy)
+        self.assertEqual(self.fake.applied["resolution_id"], 1)
+        self.assertEqual(self.fake.applied["contrast"], 110)
+        self.assertEqual(self.fake.applied["exposure"], 12000.)
+        self.assertFalse(self.fake.applied["auto_exposure"])
+        self.assertNotIn(threading.get_ident(), self.fake.thread_ids)
+
     def test_main_window_owns_single_camera_window_and_waits_for_camera_on_exit(self):
         root = HoleSelector()
         root.show()

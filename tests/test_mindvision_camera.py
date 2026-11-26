@@ -30,6 +30,9 @@ class FakeSDK:
         self.timeout = False
         self.mono = mono
         self.value = 17
+        self.presets = [NS(iIndex=0, iWidth=4, iHeight=3, GetDescription=lambda: "Full"),
+                        NS(iIndex=1, iWidth=2, iHeight=2, GetDescription=lambda: "Small")]
+        self.current_size = self.presets[0]
 
     def GetLastError(self):
         return self.last_error
@@ -51,9 +54,13 @@ class FakeSDK:
                 return NS(sIspCapacity=NS(bMonoSensor=self.mono),
                           sResolutionRange=NS(iWidthMax=4, iHeightMax=3),
                           sExposeDesc=NS(uiAnalogGainMin=1, uiAnalogGainMax=64),
-                          sGammaRange=NS(iMin=1, iMax=500))
+                          sGammaRange=NS(iMin=1, iMax=500),
+                          sContrastRange=NS(iMin=0, iMax=255),
+                          pImageSizeDesc=self.presets, iImageSizeDesc=len(self.presets))
             if name == "CameraGetImageResolution":
-                return NS(iWidth=4, iHeight=3)
+                return self.current_size
+            if name == "CameraSetImageResolution":
+                self.current_size = args[1]
             if name == "CameraGetImageBuffer":
                 if self.timeout:
                     raise CameraError(-12)
@@ -152,3 +159,28 @@ def test_parameter_units_and_setter_errors(camera):
     sdk.errors["CameraSetGamma"] = -7
     with pytest.raises(CameraError):
         c.apply_parameters({"gamma": 150})
+
+
+def test_resolution_uses_complete_camera_preset_and_updates_readback(camera):
+    c, sdk = camera
+    params = c.parameters()
+    assert len(params["resolutions"]) == 2
+    assert params["resolution_id"] == 0
+    with pytest.raises(RuntimeError, match="Stop acquisition"):
+        c.apply_parameters({"resolution_id": 1})
+    c.stop_live()
+    c.apply_parameters({"resolution_id": 1})
+    assert c.resolution == (2, 2)
+    assert c.parameters()["resolution_id"] == 1
+    assert ("CameraSetImageResolution", 7, c._presets[1]) in sdk.calls
+    with pytest.raises(ValueError):
+        c.apply_parameters({"resolution_id": -1})
+
+
+def test_gamma_contrast_select_dynamic_lut_and_manual_exposure_disables_ae(camera):
+    c, sdk = camera
+    c.apply_parameters({"auto_exposure": False, "exposure": 2345., "gamma": 110, "contrast": 120})
+    assert ("CameraSetLutMode", 7, 0) in sdk.calls
+    assert ("CameraSetGamma", 7, 110) in sdk.calls
+    assert ("CameraSetContrast", 7, 120) in sdk.calls
+    assert sdk.calls.index(("CameraSetAeState", 7, 0)) < sdk.calls.index(("CameraSetExposureTime", 7, 2345.))

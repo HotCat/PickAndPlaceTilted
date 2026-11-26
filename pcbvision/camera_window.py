@@ -61,7 +61,9 @@ class CameraWorker(QThread):
                         if command == "scan":
                             devices = camera.enumerate_devices()
                             self.devices_found.emit(devices)
-                            self.message.emit(f"Found {len(devices)} camera(s). Select a device and click Open.")
+                            library = getattr(camera, "sdk_library", "")
+                            detail = f" SDK: {library}." if library else ""
+                            self.message.emit(f"Found {len(devices)} camera(s). Select a device and click Open.{detail}")
                         elif command == "open":
                             camera.open(value)
                             self.parameters_ready.emit(camera.parameters())
@@ -144,7 +146,7 @@ class CameraWindow(QWidget):
                  camera_name="Hikvision", preview_only=False):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle(f"{camera_name} camera — " + ("fiducial aiming preview" if preview_only else "live view and snapshot"))
-        self.resize(1100, 720)
+        self.resize(1100, 800 if preview_only else 720)
         self._devices = []
         self._is_open = False
         self._is_live = False
@@ -176,16 +178,27 @@ class CameraWindow(QWidget):
         self.auto_exposure = QCheckBox("Auto exposure")
         self.auto_exposure.toggled.connect(self._update_exposure_enabled)
         form.addRow(self.auto_exposure)
+        self.manual_exposure_button = QPushButton("Manual exposure / 手动曝光")
+        self.manual_exposure_button.setToolTip("Turn off auto exposure, then enter Exposure and click Apply parameters")
+        self.manual_exposure_button.clicked.connect(self._choose_manual_exposure)
+        form.addRow(self.manual_exposure_button)
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.setToolTip("Camera acquisition preset, not display scaling; click Apply parameters")
+        form.addRow(QLabel("Resolution / 分辨率"))
+        form.addRow(self.resolution_combo)
         self.float_controls = {}
         for key, label, suffix in (("exposure", "Exposure", " µs"),
-                                   ("gain", "Gain", " dB"), ("gamma", "Gamma", "")):
+                                   ("gain", "Gain", " dB"), ("gamma", "Gamma", ""),
+                                   ("contrast", "Contrast / 对比度", "")):
             spin = QDoubleSpinBox()
             spin.setDecimals(3)
             spin.setSuffix(suffix)
             spin.setKeyboardTracking(False)
-            if camera_name == "MindVision" and key in ("gain", "gamma"):
+            if camera_name == "MindVision" and key in ("gain", "gamma", "contrast"):
                 spin.setDecimals(0)
                 spin.setSuffix(" SDK units" if key == "gain" else "")
+            if camera_name == "MindVision" and key in ("gamma", "contrast"):
+                spin.setToolTip("Native SDK scale (100 is neutral); Apply selects the gamma/contrast LUT")
             self.float_controls[key] = spin
             form.addRow(label, spin)
         self.reverse_x = QCheckBox("Mirror X")
@@ -204,8 +217,8 @@ class CameraWindow(QWidget):
         sidebar.addWidget(self.parameters_group)
         sidebar.addWidget(self.crosshair)
         hint = QLabel(
-            "Preview only / 仅预览。Align the fiducial with the center crosshair. "
-            "Camera settings do not move the robot. The optical center is not a calibrated TCP or hand–eye transform."
+            "Align the fiducial with the crosshair / 十字线对准标记。"
+            "Image center has an offset from TCP; use for rough aiming."
             if preview_only else
             "Snapshots use a fresh full-resolution frame and go directly to the main image area. Click Register there to apply the CAD overlay.")
         hint.setWordWrap(True)
@@ -284,6 +297,12 @@ class CameraWindow(QWidget):
     @Slot(object)
     def _set_parameters(self, values):
         self._capabilities = values
+        self.resolution_combo.clear()
+        for preset in values.get("resolutions", []):
+            self.resolution_combo.addItem(preset["label"], preset["id"])
+        self.resolution_combo.setCurrentIndex(self.resolution_combo.findData(values.get("resolution_id")))
+        self.resolution_combo.setEnabled(bool(values.get("resolutions")))
+        self.manual_exposure_button.setEnabled(values.get("auto_exposure") is not None and values.get("exposure") is not None)
         for key, spin in self.float_controls.items():
             node = values.get(key)
             spin.setEnabled(node is not None)
@@ -297,6 +316,12 @@ class CameraWindow(QWidget):
             check.setChecked(bool(values.get(key)))
         self._update_exposure_enabled()
 
+    def _choose_manual_exposure(self):
+        self.auto_exposure.setChecked(False)
+        self.float_controls["exposure"].setFocus()
+        self.float_controls["exposure"].selectAll()
+        self.status.setText("Manual exposure selected. Enter Exposure (µs), then click Apply parameters. / 输入曝光时间后点击应用。")
+
     def _update_exposure_enabled(self):
         self.float_controls["exposure"].setEnabled(
             self._capabilities.get("exposure") is not None and not self.auto_exposure.isChecked()
@@ -309,6 +334,9 @@ class CameraWindow(QWidget):
                            ("reverse_x", self.reverse_x), ("reverse_y", self.reverse_y)):
             if self._capabilities.get(key) is not None:
                 values[key] = check.isChecked()
+        selected = self.resolution_combo.currentData()
+        if selected is not None and selected != self._capabilities.get("resolution_id"):
+            values["resolution_id"] = selected
         self._submit("apply", values)
 
     @Slot(object)

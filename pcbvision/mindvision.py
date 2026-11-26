@@ -7,6 +7,7 @@ numpy frames own their memory and survive the next acquisition or camera close.
 from __future__ import annotations
 
 import importlib
+import copy
 from ctypes import c_ubyte
 
 import numpy as np
@@ -27,10 +28,12 @@ class MindVisionCamera:
 
     def __init__(self, sdk=None):
         self.sdk = sdk if sdk is not None else _load_sdk()
+        self.sdk_library = getattr(getattr(self.sdk, "_sdk", None), "_name", "libMVSDK.so")
         self._handle = None
         self._buffer = None
         self._capacity = 0
         self._cap = None
+        self._presets = []
         self.is_streaming = False
         self.resolution = (0, 0)
         self._call("CameraSdkInit", 1)
@@ -63,6 +66,12 @@ class MindVisionCamera:
         try:
             self._handle = self._call("CameraInit", dev_info, -1, -1)
             self._cap = self._call("CameraGetCapability", self._handle)
+            # Keep complete native preset structures: binning, subsampling and
+            # ROI offsets matter as well as width/height (same as GTK_demo).
+            if not 0 <= self._cap.iImageSizeDesc <= 256:
+                raise RuntimeError("Invalid SDK resolution table; check library/wrapper compatibility")
+            self._presets = [copy.copy(self._cap.pImageSizeDesc[i])
+                             for i in range(self._cap.iImageSizeDesc)]
             self._mono = bool(self._cap.sIspCapacity.bMonoSensor)
             fmt = self.sdk.CAMERA_MEDIA_TYPE_MONO8 if self._mono else self.sdk.CAMERA_MEDIA_TYPE_BGR8
             self._call("CameraSetIspOutFormat", self._handle, fmt)
@@ -151,15 +160,44 @@ class MindVisionCamera:
             # Native analogue gain is an integer SDK index, not Hikvision dB.
             "gain": node("CameraGetAnalogGain", cap.sExposeDesc.uiAnalogGainMin, cap.sExposeDesc.uiAnalogGainMax),
             "gamma": node("CameraGetGamma", cap.sGammaRange.iMin, cap.sGammaRange.iMax),
+            "contrast": node("CameraGetContrast", cap.sContrastRange.iMin, cap.sContrastRange.iMax),
             "auto_exposure": optional("CameraGetAeState"),
             "reverse_x": optional("CameraGetMirror", 0),
             "reverse_y": optional("CameraGetMirror", 1),
+            **self._resolution_parameters(),
         }
 
+    def _resolution_parameters(self):
+        current = self._call("CameraGetImageResolution", self._handle)
+        self.resolution = (current.iWidth, current.iHeight)
+        choices, selected = [], -1
+        for index, preset in enumerate(self._presets):
+            choices.append({"id": index,
+                            "label": f"{preset.iWidth} × {preset.iHeight} — {preset.GetDescription()}"})
+            if (preset.iIndex, preset.iWidth, preset.iHeight) == (current.iIndex, *self.resolution):
+                selected = index
+        if selected == -1:
+            # Preserve a camera's existing custom ROI until a preset is chosen.
+            choices.insert(0, {"id": -1, "label": f"{current.iWidth} × {current.iHeight} — current ROI"})
+        return {"resolutions": choices, "resolution_id": selected}
+
     def apply_parameters(self, values):
+        if "resolution_id" in values:
+            index = values["resolution_id"]
+            if not isinstance(index, int) or not 0 <= index < len(self._presets):
+                raise ValueError("Select a camera resolution preset")
+            if self.is_streaming:
+                raise RuntimeError("Stop acquisition before changing resolution")
+            self._call("CameraSetImageResolution", self._handle, self._presets[index])
+            self._resolution_parameters()
+        if "gamma" in values or "contrast" in values:
+            # Gamma/contrast have no effect with a preset/user LUT. Explicit
+            # edits select the SDK's parameter-generated LUT, as documented.
+            self._call("CameraSetLutMode", self._handle, 0)
         for key, name in (("auto_exposure", "CameraSetAeState"),
                           ("exposure", "CameraSetExposureTime"),
-                          ("gain", "CameraSetAnalogGain"), ("gamma", "CameraSetGamma")):
+                          ("gain", "CameraSetAnalogGain"), ("gamma", "CameraSetGamma"),
+                          ("contrast", "CameraSetContrast")):
             if key in values and not (key == "exposure" and values.get("auto_exposure")):
                 value = values[key] if key == "exposure" else int(round(values[key]))
                 self._call(name, self._handle, value)

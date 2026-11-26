@@ -7,7 +7,7 @@ if [[ ! -x .venv-camera/bin/python ]]; then
     echo "Create the camera environment: python3 -m venv .venv-camera && .venv-camera/bin/pip install -r requirements-preview.txt" >&2
     exit 1
 fi
-# Default is the unpacked SDK supplied for this workstation; override via env
-# or --sdk-root. No system-library installation or root permissions required.
-export MINDVISION_SDK_ROOT="${MINDVISION_SDK_ROOT:-$HOME/Downloads/new3dvision/library/hopencv/mindvision2/usv-multiSensor-driver-master/linuxSDK_V2.1.0.6}"
+# Use the same installed libMVSDK.so as the working GTK demo by default.
+# Explicit --sdk-root, MINDVISION_SDK_ROOT or MINDVISION_SDK_LIBRARY overrides it.
+# The unpacked SDK contains a different library which cannot discover this GE502M.
 exec .venv-camera/bin/python -m pcbvision.preview "$@"
