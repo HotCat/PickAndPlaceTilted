@@ -2,22 +2,92 @@
 from __future__ import annotations
 
 import queue
+import math
 import threading
 import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QThread, Qt, Signal, Slot
+from PySide6.QtCore import QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout,
+    QWidget,
 )
 
 
 def _make_camera():
     from .hikvision import HikvisionCamera
     return HikvisionCamera()
+
+
+class _ParameterSlider(QWidget):
+    """A Dear ImGui-style drag control with a precise numeric editor.
+
+    The camera SDK ranges are often floating point and can span several orders
+    of magnitude, while QSlider works with integers.  Keep the slider normalized
+    to 0..1000 and map it to the parameter range; exposure uses logarithmic
+    mapping so a wide microsecond range remains useful at both ends.
+    """
+
+    valueEdited = Signal(float)
+
+    def __init__(self, key, spin, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.spin = spin
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 1000)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(50)
+        self.slider.setMinimumWidth(145)
+        self.slider.setToolTip('Drag to tune this camera parameter; type an exact value at right')
+        self.slider.valueChanged.connect(self._slider_changed)
+        self.spin.valueChanged.connect(self._spin_changed)
+        self.spin.editingFinished.connect(lambda: self.valueEdited.emit(self.spin.value()))
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.spin)
+
+    def set_range(self, minimum, maximum):
+        self.spin.setRange(minimum, maximum)
+        self._sync_slider(self.spin.value())
+
+    def set_value(self, value):
+        self.spin.setValue(value)
+        self._sync_slider(value)
+
+    def _normalized(self, value):
+        lo, hi = self.spin.minimum(), self.spin.maximum()
+        if hi <= lo:
+            return 0
+        if self.key == 'exposure' and lo > 0 and hi / lo >= 20:
+            return round(1000 * (math.log(max(lo, value)) - math.log(lo)) /
+                         (math.log(hi) - math.log(lo)))
+        return round(1000 * (value - lo) / (hi - lo))
+
+    def _value(self, position):
+        lo, hi = self.spin.minimum(), self.spin.maximum()
+        if self.key == 'exposure' and lo > 0 and hi / lo >= 20:
+            return math.exp(math.log(lo) + position / 1000 * (math.log(hi) - math.log(lo)))
+        return lo + position / 1000 * (hi - lo)
+
+    def _sync_slider(self, value):
+        self.slider.blockSignals(True)
+        self.slider.setValue(max(0, min(1000, self._normalized(value))))
+        self.slider.blockSignals(False)
+
+    def _slider_changed(self, position):
+        self.spin.blockSignals(True)
+        self.spin.setValue(self._value(position))
+        self.spin.blockSignals(False)
+        self.valueEdited.emit(self.spin.value())
+
+    def _spin_changed(self, value):
+        self._sync_slider(value)
 
 
 class CameraWorker(QThread):
@@ -27,6 +97,7 @@ class CameraWorker(QThread):
     preview_ready = Signal(object)
     snapshot_ready = Signal(object)
     calibration_frame_ready = Signal(object)
+    tuning_done = Signal(object)
     message = Signal(str)
     command_done = Signal()
 
@@ -55,6 +126,21 @@ class CameraWorker(QThread):
                     command = None
                 if command == "shutdown":
                     break
+                if command == 'tune':
+                    # Scalar SDK controls are writable during acquisition.
+                    # Do not stop/start the stream for each drag event, and
+                    # report completion separately from modal camera commands.
+                    result = {'requested': value, 'parameters': None, 'error': ''}
+                    try:
+                        if camera is None or not camera.is_open:
+                            raise RuntimeError('Open a camera before tuning')
+                        camera.apply_parameters(value)
+                        result['parameters'] = camera.parameters()
+                    except Exception as exc:
+                        result['error'] = str(exc)
+                        self.message.emit(f'Camera tuning failed: {exc}')
+                    self.tuning_done.emit(result)
+                    continue
                 if command is not None:
                     try:
                         if camera is None:
@@ -171,6 +257,12 @@ class CameraWindow(QWidget):
         self.camera_name = camera_name
         self.intrinsic_window = None
         self._opened_device = None
+        self._pending_tunes = {}
+        self._tuning = False
+        self._tune_timer = QTimer(self)
+        self._tune_timer.setSingleShot(True)
+        self._tune_timer.setInterval(100)
+        self._tune_timer.timeout.connect(self._flush_tuning)
 
         self.preview = QLabel("Open a camera and start live view")
         self.preview.setAlignment(Qt.AlignCenter)
@@ -193,13 +285,30 @@ class CameraWindow(QWidget):
         self.crosshair.toggled.connect(self._paint_preview)
         self.read_button = QPushButton("Read parameters")
         self.apply_button = QPushButton("Apply parameters")
-        self.parameters_group = QGroupBox("Camera parameters")
+        self.parameters_group = QGroupBox("Camera parameters / 相机参数")
+        self.parameters_group.setStyleSheet('''
+          QGroupBox { background: #252d38; color: #edf1f7; border: 1px solid #45586c;
+            border-radius: 5px; margin-top: 12px; padding: 12px 8px 8px; }
+          QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 10px; }
+          QLabel, QCheckBox { color: #edf1f7; background: transparent; }
+          QDoubleSpinBox, QComboBox { color: #edf1f7; background: #151d27;
+            border: 1px solid #45586c; padding: 4px; }
+          QDoubleSpinBox:disabled, QComboBox:disabled, QCheckBox:disabled { color: #8492a3; }
+          QPushButton { color: #edf1f7; background: #34485b; padding: 6px;
+            border: 1px solid #526c83; border-radius: 3px; }
+          QPushButton:disabled { color: #8492a3; background: #263441; }
+          QSlider::groove:horizontal { height: 12px; background: #151d27; border-radius: 4px; }
+          QSlider::sub-page:horizontal { background: #285e86; border-radius: 4px; }
+          QSlider::handle:horizontal { background: #69b5ed; width: 12px; margin: -3px 0; border-radius: 3px; }
+          QSlider::handle:horizontal:hover { background: #a4d9ff; }
+          QSlider::handle:horizontal:disabled { background: #526170; }
+        ''')
         form = QFormLayout(self.parameters_group)
         self.auto_exposure = QCheckBox("Auto exposure")
-        self.auto_exposure.toggled.connect(self._update_exposure_enabled)
+        self.auto_exposure.toggled.connect(self._auto_exposure_changed)
         form.addRow(self.auto_exposure)
         self.manual_exposure_button = QPushButton("Manual exposure / 手动曝光")
-        self.manual_exposure_button.setToolTip("Turn off auto exposure, then enter Exposure and click Apply parameters")
+        self.manual_exposure_button.setToolTip("Turn off auto exposure, then drag Exposure to tune live / 关闭自动曝光后拖动实时调节")
         self.manual_exposure_button.clicked.connect(self._choose_manual_exposure)
         form.addRow(self.manual_exposure_button)
         self.resolution_combo = QComboBox()
@@ -207,8 +316,9 @@ class CameraWindow(QWidget):
         form.addRow(QLabel("Resolution / 分辨率"))
         form.addRow(self.resolution_combo)
         self.float_controls = {}
-        for key, label, suffix in (("exposure", "Exposure", " µs"),
-                                   ("gain", "Gain", " dB"), ("gamma", "Gamma", ""),
+        self.parameter_sliders = {}
+        for key, label, suffix in (("exposure", "Exposure / 曝光", " µs"),
+                                   ("gain", "Gain / 增益", " dB"), ("gamma", "Gamma / 伽马", ""),
                                    ("contrast", "Contrast / 对比度", "")):
             spin = QDoubleSpinBox()
             spin.setDecimals(3)
@@ -218,9 +328,16 @@ class CameraWindow(QWidget):
                 spin.setDecimals(0)
                 spin.setSuffix(" SDK units" if key == "gain" else "")
             if camera_name == "MindVision" and key in ("gamma", "contrast"):
-                spin.setToolTip("Native SDK scale (100 is neutral); Apply selects the gamma/contrast LUT")
+                spin.setToolTip("Native SDK scale (100 is neutral); edits select the gamma/contrast LUT")
             self.float_controls[key] = spin
-            form.addRow(label, spin)
+            control = _ParameterSlider(key, spin)
+            control.valueEdited.connect(lambda value, name=key: self._queue_tuning(name, value))
+            self.parameter_sliders[key] = control
+            form.addRow(QLabel(label))
+            form.addRow(control)
+        tuning_hint = QLabel('Drag to tune live; type for precision. / 拖动实时调节，也可输入精确值。')
+        tuning_hint.setWordWrap(True)
+        form.addRow(tuning_hint)
         self.reverse_x = QCheckBox("Mirror X")
         self.reverse_y = QCheckBox("Mirror Y")
         form.addRow(self.reverse_x)
@@ -248,7 +365,15 @@ class CameraWindow(QWidget):
         sidebar.addStretch()
         row = QHBoxLayout()
         row.addWidget(self.preview, 1)
-        row.addLayout(sidebar)
+        sidebar_widget = QWidget()
+        sidebar_widget.setLayout(sidebar)
+        sidebar_scroll = QScrollArea()
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar_scroll.setMinimumWidth(380)
+        sidebar_scroll.setMaximumWidth(430)
+        sidebar_scroll.setWidget(sidebar_widget)
+        row.addWidget(sidebar_scroll)
         layout = QVBoxLayout(self)
         layout.addLayout(row, 1)
         layout.addWidget(self.status)
@@ -260,6 +385,7 @@ class CameraWindow(QWidget):
         self.worker.preview_ready.connect(self._show_preview)
         self.worker.snapshot_ready.connect(self._deliver_snapshot)
         self.worker.calibration_frame_ready.connect(self._deliver_calibration_frame)
+        self.worker.tuning_done.connect(self._tuning_done)
         self.worker.message.connect(self._message)
         self.worker.command_done.connect(self._command_done)
         self.worker.finished.connect(self._finish_close)
@@ -276,6 +402,9 @@ class CameraWindow(QWidget):
     def _submit(self, command, value=None):
         if self._busy or self._closing:
             return
+        if command in ('disconnect', 'open', 'scan', 'apply', 'parameters'):
+            self._pending_tunes.clear()
+            self._tune_timer.stop()
         self._busy = True
         self.status.setText(f"{command.capitalize()}…")
         self._update_controls()
@@ -287,6 +416,8 @@ class CameraWindow(QWidget):
         self._update_controls()
         if self._closing:
             return
+        if self._is_open and self._pending_tunes:
+            self._tune_timer.start()
         if self._startup_stage == 'scan':
             self._startup_stage = None
             if not self._devices_received:
@@ -383,29 +514,88 @@ class CameraWindow(QWidget):
         self.resolution_combo.setCurrentIndex(self.resolution_combo.findData(values.get("resolution_id")))
         self.resolution_combo.setEnabled(bool(values.get("resolutions")))
         self.manual_exposure_button.setEnabled(values.get("auto_exposure") is not None and values.get("exposure") is not None)
-        for key, spin in self.float_controls.items():
+        for key in self.float_controls:
             node = values.get(key)
-            spin.setEnabled(node is not None)
-            spin.setToolTip("Unsupported by this camera" if node is None else "")
+            control = self.parameter_sliders[key]
+            control.setEnabled(node is not None)
+            tooltip = 'Unsupported by this camera / 此相机不支持' if node is None else 'Drag to tune live; type an exact value / 拖动实时调节，或输入精确值'
+            if node is not None and self.camera_name == 'MindVision' and key in ('gamma', 'contrast'):
+                tooltip += '; native SDK scale, 100 neutral / SDK原生刻度，100为中性'
+            control.setToolTip(tooltip)
             if node is not None:
-                spin.setRange(node["min"], node["max"])
-                spin.setValue(node["value"])
+                control.set_range(node["min"], node["max"])
+                control.set_value(node["value"])
         for key, check in (("auto_exposure", self.auto_exposure),
                            ("reverse_x", self.reverse_x), ("reverse_y", self.reverse_y)):
             check.setEnabled(values.get(key) is not None)
+            check.blockSignals(True)
             check.setChecked(bool(values.get(key)))
+            check.blockSignals(False)
         self._update_exposure_enabled()
 
     def _choose_manual_exposure(self):
         self.auto_exposure.setChecked(False)
+        self._pending_tunes['auto_exposure'] = False
+        self._tune_timer.start()
         self.float_controls["exposure"].setFocus()
         self.float_controls["exposure"].selectAll()
-        self.status.setText("Manual exposure selected. Enter Exposure (µs), then click Apply parameters. / 输入曝光时间后点击应用。")
+        self.status.setText("Manual exposure selected. Drag Exposure or type a value in µs. / 已选择手动曝光，拖动或输入微秒值。")
 
     def _update_exposure_enabled(self):
-        self.float_controls["exposure"].setEnabled(
+        self.parameter_sliders["exposure"].setEnabled(
             self._capabilities.get("exposure") is not None and not self.auto_exposure.isChecked()
         )
+
+    def _auto_exposure_changed(self, checked):
+        self._update_exposure_enabled()
+        if self._is_open and not self._closing and self._capabilities.get('auto_exposure') is not None:
+            self._pending_tunes['auto_exposure'] = checked
+            if checked:
+                self._pending_tunes.pop('exposure', None)
+            self._tune_timer.start()
+
+    def _queue_tuning(self, key, value):
+        if self._closing or not self._is_open or self._capabilities.get(key) is None:
+            return
+        if key == 'exposure':
+            if self.auto_exposure.isChecked():
+                return
+            self._pending_tunes['auto_exposure'] = False
+        self._pending_tunes[key] = value
+        # Coalesce fast mouse events without postponing every write until the
+        # drag ends. Only one write/readback can be in flight at a time.
+        if not self._tune_timer.isActive():
+            self._tune_timer.start()
+
+    def _flush_tuning(self):
+        if self._closing or not self._is_open:
+            self._pending_tunes.clear()
+            return
+        if self._busy or self._tuning or not self._pending_tunes:
+            return
+        values, self._pending_tunes = self._pending_tunes, {}
+        self._tuning = True
+        self.worker.submit('tune', values)
+
+    def _tuning_done(self, result):
+        self._tuning = False
+        if self._closing:
+            return
+        parameters = result['parameters']
+        if parameters is not None:
+            # Never let an older SDK readback jump the handle back underneath
+            # an ongoing drag or overwrite the next coalesced user edit.
+            for key in result['requested']:
+                if key not in self.parameter_sliders or key in self._pending_tunes or self._busy:
+                    continue
+                control = self.parameter_sliders[key]
+                node = parameters.get(key)
+                if node is not None and not control.slider.isSliderDown() and not control.spin.hasFocus():
+                    control.set_value(node['value'])
+        if result['error']:
+            self._pending_tunes.clear()
+        elif self._pending_tunes:
+            self._tune_timer.start()
 
     def _apply_parameters(self):
         values = {key: spin.value() for key, spin in self.float_controls.items()
@@ -460,6 +650,8 @@ class CameraWindow(QWidget):
         self.close()
 
     def closeEvent(self, event):
+        self._tune_timer.stop()
+        self._pending_tunes.clear()
         if self.intrinsic_window is not None:
             self.intrinsic_window.close()
             if self.intrinsic_window is not None:

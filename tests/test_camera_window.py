@@ -26,6 +26,10 @@ class FakeCamera:
         self.resolution = (1600, 1200)
         self.thread_ids = set()
         self.applied = None
+        self.apply_history = []
+        self.tune_entered = threading.Event()
+        self.tune_release = threading.Event()
+        self.tune_release.set()
         self.snapshot_entered = threading.Event()
         self.snapshot_release = threading.Event()
         self.snapshot_release.set()
@@ -51,7 +55,11 @@ class FakeCamera:
 
     def apply_parameters(self, values):
         self.record()
+        self.tune_entered.set()
+        if not self.tune_release.wait(3):
+            raise RuntimeError('Fake parameter write blocked')
         self.applied = values
+        self.apply_history.append(dict(values))
 
     def start_live(self):
         self.record()
@@ -98,6 +106,7 @@ class CameraWindowTests(unittest.TestCase):
 
     def tearDown(self):
         self.fake.snapshot_release.set()
+        self.fake.tune_release.set()
         self.window.close()
         self.wait_until(lambda: not self.worker.isRunning())
         self.app.processEvents()
@@ -154,6 +163,54 @@ class CameraWindowTests(unittest.TestCase):
         self.assertEqual(snapshots, [])
         self.assertIn("timed out", self.window.status.text())
         self.assertTrue(self.window.snapshot_button.isEnabled())
+
+    def test_live_sliders_coalesce_edits_without_stopping_preview_or_resetting_drag(self):
+        self.open_camera()
+        self.window.live_button.click()
+        self.wait_until(lambda: self.window._is_live and not self.window._busy)
+        gain = self.window.parameter_sliders['gain']
+        self.fake.tune_release.clear()
+        gain.slider.setSliderDown(True)
+        gain.slider.setValue(250)  # 6 dB, first worker write
+        self.wait_until(self.fake.tune_entered.is_set)
+        # While the worker is blocked, the GUI can still accept a newer value.
+        for position in (300, 500, 700, 750):
+            gain.slider.setValue(position)
+        self.assertEqual(gain.spin.value(), 18.)
+        QTest.qWait(150)
+        self.assertTrue(gain.slider.isEnabled())
+        self.assertTrue(self.window._is_live)
+        self.fake.tune_release.set()
+        self.wait_until(lambda: len(self.fake.apply_history) == 2 and not self.window._tuning)
+        self.assertEqual(self.fake.apply_history, [{'gain': 6.}, {'gain': 18.}])
+        # Fake camera returns its old value; never jump back during a drag.
+        self.assertEqual(gain.spin.value(), 18.)
+        self.assertTrue(self.fake.is_streaming)
+        self.assertNotIn(threading.get_ident(), self.fake.thread_ids)
+        gain.slider.setSliderDown(False)
+
+    def test_exposure_scale_exact_entry_and_unsupported_slider(self):
+        self.open_camera()
+        exposure = self.window.parameter_sliders['exposure']
+        self.assertFalse(self.window.parameter_sliders['gamma'].isEnabled())
+        self.window.auto_exposure.setChecked(True)
+        self.assertFalse(exposure.slider.isEnabled())
+        self.wait_until(lambda: self.fake.applied == {'auto_exposure': True} and not self.window._tuning)
+        self.window.auto_exposure.setChecked(False)
+        exposure.slider.setValue(500)
+        self.assertAlmostEqual(exposure.spin.value(), 10000., places=3)
+        self.wait_until(lambda: self.fake.applied.get('exposure') == 10000. and not self.window._tuning)
+        self.assertFalse(self.fake.applied['auto_exposure'])
+        gain = self.window.parameter_sliders['gain']
+        gain.spin.setFocus()
+        gain.spin.setValue(5.25)
+        gain.spin.editingFinished.emit()
+        self.wait_until(lambda: self.fake.applied == {'gain': 5.25} and not self.window._tuning)
+        self.assertEqual(gain.slider.value(), round(5.25 / 24 * 1000))
+        self.fake.apply_history.clear()
+        self.window._set_parameters(self.fake.parameters())
+        QTest.qWait(150)
+        self.assertEqual(self.fake.apply_history, [])  # readback never writes
 
     def test_close_during_snapshot_waits_for_worker_and_discards_late_frame(self):
         self.open_camera()

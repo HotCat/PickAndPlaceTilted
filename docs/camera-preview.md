@@ -28,12 +28,22 @@ No system files are modified. The scan status shows the library being loaded.
 检测到这台相机，因此启动脚本已取消强制使用该目录。
 
 Select the device → **Open camera** → **Start live view**. Use resolution, exposure,
-auto exposure, gain, gamma, contrast and mirror controls. Click
-**Apply parameters** to change them. Opening does not overwrite exposure or gain.
+auto exposure, gain, gamma, contrast and mirror controls. **Exposure, Gain, Gamma
+and Contrast have horizontal drag sliders beside their numeric editors**, like
+the OCR application's camera controls. Drag to tune the live image, or type an
+exact value and press Enter/leave the editor; no Apply click is needed for these
+four parameters. Writes are coalesced on the camera worker, with at most one
+write/readback in flight; slider updates do not stop/restart acquisition.
+Exposure uses a logarithmic scale when the SDK range is wide so short exposures
+remain easy to adjust. Other parameters use linear native SDK scales. Unsupported
+controls are disabled. Opening does not overwrite exposure or gain.
+Use **Apply parameters** for resolution and mirror changes (or to apply the whole
+form). These changes retain the existing acquisition pause/resume behavior.
 MindVision gain uses native integer SDK units; Hikvision gain uses dB.
 
 For **manual exposure**, click **Manual exposure / 手动曝光** (or uncheck Auto
-exposure), enter Exposure in microseconds, then click **Apply parameters**.
+exposure), then drag Exposure or enter microseconds. The auto-exposure checkbox
+also applies immediately; manual exposure controls are disabled while it is on.
 Gamma and contrast use the same native scales as GTK_demo (100 is neutral on
 this camera). Applying them selects the SDK's parameter-generated LUT so their
 changes affect the processed image.
@@ -57,9 +67,12 @@ selected preset. ROI can crop the field of view. Recheck the fiducial/crosshair
 alignment when changing presets; a resolution change is not a camera calibration.
 
 选择相机 → **Open camera（打开）** → **Start live view（实时预览）**。
-可选择分辨率，调整曝光、自动曝光、增益、伽马、对比度和镜像，然后点击
-**Apply parameters** 应用。手动曝光请点击 **Manual exposure / 手动曝光**，输入
-微秒值后应用；此操作关闭自动曝光。分辨率列表与 GTK_demo 一样来自相机 SDK，实际
+曝光、增益、伽马和对比度支持横向拖动滑块，实时生效，无需逐次点击应用。
+右侧可输入精确数值，按回车或离开输入框生效。曝光范围较大时使用对数滑块，方便
+调节短曝光；其余使用 SDK 原生线性刻度。不支持的参数会变灰。
+手动曝光请点击 **Manual exposure / 手动曝光**，关闭自动曝光后拖动或输入微秒值。
+自动曝光勾选项也立即生效。分辨率和镜像仍点击 **Apply parameters** 应用。
+分辨率列表与 GTK_demo 一样来自相机 SDK，实际
 修改采集模式，而非仅缩放显示。ROI 可能裁剪视野，切换后请重新检查十字线对准。
 默认显示中心十字线，便于粗略对准标记；十字线只叠加在显示画面上。
 
