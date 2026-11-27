@@ -48,6 +48,60 @@ Gamma and contrast use the same native scales as GTK_demo (100 is neutral on
 this camera). Applying them selects the SDK's parameter-generated LUT so their
 changes affect the processed image.
 
+## Camera profiles / 相机参数配置
+
+At the top of **Camera parameters / 相机参数**:
+
+- **Save as… / 另存为…**: name a new profile after tuning, for example
+  `Chessboard` or `Part inspection`. The name must be unique for this camera.
+- **Save / 保存**: update the selected profile with the current camera values.
+- Select a profile, then **Load / 加载** to apply it. Selecting a name alone
+  does not change the camera. Profiles are discovered again when opening the
+  camera, so they remain available after restarting preview.
+
+Each profile is a separate, editable UTF-8 JSON configuration file underneath:
+
+```text
+~/.config/pickplace-workbench/camera-profiles/<backend>/<camera-serial-scope>/<profile-name-scope>.json
+```
+
+The scopes include readable names and hashes to keep file paths unambiguous.
+The complete path is shown beneath the profile buttons and in launcher logs.
+`XDG_CONFIG_HOME` overrides `~/.config`. English and Chinese names are supported.
+Profiles are independent of the source checkout and are not committed to Git.
+
+Save waits for any queued/in-flight slider edits, then records **actual SDK
+readback**: exposure, gain, gamma, contrast where supported, auto exposure,
+mirrors, native image size, resolution preset and ROI/binning geometry. Apply
+pending resolution/mirror form edits first if you want those saved; Save does
+not silently apply an unapplied form. When auto exposure is on, the saved
+exposure is a snapshot; loading restores automatic mode rather than fixing that
+exposure value. Existing profiles are updated only by the explicit Save button.
+
+Load checks backend/serial, supported parameters, ranges and resolution preset
+before writing. It cancels queued slider edits, waits for any in-flight write,
+pauses live acquisition, applies the profile, checks SDK readback and resumes
+live acquisition if previously running. An SDK failure is reported and actual
+readback is shown; hardware parameter writes are not transactional, so a partial
+failure can leave some settings changed. Invalid profiles are never silently
+clamped or applied to a different camera. Malformed files are listed in the
+profile panel instead of hiding the error.
+
+MindVision presets can be restored directly. Custom ROIs and Hikvision
+ROI/binning modes currently require their saved geometry to match the camera's
+current mode; otherwise loading stops with an explanation. Profiles contain
+camera tuning settings, **not** intrinsic K/distortion, lens focus or robot
+calibration. Changing resolution or mirrors may invalidate a previously fitted
+intrinsic calibration. Camera open continues to preserve the camera's existing
+settings; profiles are applied only when Load is clicked.
+
+在 **相机参数** 顶部，调节好后点击 **另存为…** 创建命名配置，例如“棋盘标定”或
+“零件检测”。点击 **保存** 更新当前选中的配置；切换到其他配置后点击 **加载**
+才会应用。每个配置独立保存为 JSON 文件，按相机接口和序列号隔离，重启后仍可选择。
+保存会等待滑块写入完成，再读取相机的实际参数；未应用的分辨率、镜像修改需先点击
+Apply。加载会校验配置、应用参数并恢复之前的实时预览，失败时显示错误。
+文件路径显示在按钮下方及启动器日志中。配置不包含相机内参、镜头对焦或机器人标定。
+
 The **Resolution / 分辨率** list comes from `CameraGetCapability`, just like
 GTK_demo. It selects a real acquisition preset with its complete ROI/binning
 configuration, not just display resizing. Acquisition pauses while settings are

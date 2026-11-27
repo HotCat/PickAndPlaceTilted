@@ -12,7 +12,7 @@ from PySide6.QtCore import QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout,
     QWidget,
 )
 
@@ -98,6 +98,7 @@ class CameraWorker(QThread):
     snapshot_ready = Signal(object)
     calibration_frame_ready = Signal(object)
     tuning_done = Signal(object)
+    profile_finished = Signal(object)
     message = Signal(str)
     command_done = Signal()
 
@@ -181,6 +182,37 @@ class CameraWorker(QThread):
                         elif command == "parameters":
                             self.parameters_ready.emit(camera.parameters())
                             self.message.emit("Read current camera parameters")
+                        elif command in ('profile_save', 'profile_load'):
+                            from .camera_profiles import ProfileStore
+                            if not camera.is_open:
+                                raise RuntimeError('Open a camera before using profiles')
+                            store = ProfileStore(value['backend'], value['serial'])
+                            parameters = camera.parameters()
+                            if command == 'profile_save':
+                                data = store.save(value['name'], parameters, camera.resolution,
+                                                  overwrite=value.get('overwrite', False))
+                            else:
+                                data = store.load(value['name'])
+                                values = store.values_for_camera(data, parameters, camera.resolution)
+                                resume = live
+                                try:
+                                    camera.stop_live()
+                                    camera.apply_parameters(values)
+                                finally:
+                                    # A rejected/partial apply must leave the UI
+                                    # showing actual camera values, and restore
+                                    # the previous live state when possible.
+                                    try:
+                                        parameters = camera.parameters()
+                                        self.parameters_ready.emit(parameters)
+                                    finally:
+                                        if resume:
+                                            camera.start_live()
+                                store.verify_applied(data, parameters, camera.resolution)
+                            self.profile_finished.emit({'action': command, 'name': data['name'],
+                                                        'path': str(store.path(data['name']))})
+                            verb = 'saved / 已保存' if command == 'profile_save' else 'loaded / 已加载'
+                            self.message.emit(f'Camera profile {verb}: {data["name"]} · {store.path(data["name"])}')
                         elif command == "apply":
                             # Some camera nodes are only writable while acquisition is stopped.
                             resume = live
@@ -259,6 +291,7 @@ class CameraWindow(QWidget):
         self._opened_device = None
         self._pending_tunes = {}
         self._tuning = False
+        self._profile_pending = None
         self._tune_timer = QTimer(self)
         self._tune_timer.setSingleShot(True)
         self._tune_timer.setInterval(100)
@@ -285,11 +318,10 @@ class CameraWindow(QWidget):
         self.crosshair.toggled.connect(self._paint_preview)
         self.read_button = QPushButton("Read parameters")
         self.apply_button = QPushButton("Apply parameters")
-        self.parameters_group = QGroupBox("Camera parameters / 相机参数")
+        self.parameters_group = QGroupBox()
         self.parameters_group.setStyleSheet('''
           QGroupBox { background: #252d38; color: #edf1f7; border: 1px solid #45586c;
-            border-radius: 5px; margin-top: 12px; padding: 12px 8px 8px; }
-          QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 10px; }
+            border-radius: 5px; padding: 8px; }
           QLabel, QCheckBox { color: #edf1f7; background: transparent; }
           QDoubleSpinBox, QComboBox { color: #edf1f7; background: #151d27;
             border: 1px solid #45586c; padding: 4px; }
@@ -304,6 +336,28 @@ class CameraWindow(QWidget):
           QSlider::handle:horizontal:disabled { background: #526170; }
         ''')
         form = QFormLayout(self.parameters_group)
+        form.addRow(QLabel('<b>Camera parameters / 相机参数</b>'))
+        self.profile_combo = QComboBox()
+        self.profile_combo.setPlaceholderText('No profiles yet / 暂无配置')
+        self.profile_combo.setToolTip('Choose a named profile, then click Load / 选择配置后点击加载')
+        self.profile_load_button = QPushButton('Load / 加载')
+        self.profile_save_button = QPushButton('Save / 保存')
+        self.profile_save_as_button = QPushButton('Save as… / 另存为…')
+        self.profile_load_button.clicked.connect(self._load_profile)
+        self.profile_save_button.clicked.connect(self._save_profile)
+        self.profile_save_as_button.clicked.connect(self._save_profile_as)
+        self.profile_combo.currentIndexChanged.connect(self._update_profile_buttons)
+        form.addRow(QLabel('Camera profile / 相机配置'))
+        form.addRow(self.profile_combo)
+        profile_buttons = QHBoxLayout()
+        for button in (self.profile_load_button, self.profile_save_button, self.profile_save_as_button):
+            profile_buttons.addWidget(button)
+        form.addRow(profile_buttons)
+        self.profile_info = QLabel('Open a camera to save/load profiles / 打开相机后保存或加载配置')
+        self.profile_info.setWordWrap(True)
+        self.profile_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.profile_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow(self.profile_info)
         self.auto_exposure = QCheckBox("Auto exposure")
         self.auto_exposure.toggled.connect(self._auto_exposure_changed)
         form.addRow(self.auto_exposure)
@@ -386,6 +440,7 @@ class CameraWindow(QWidget):
         self.worker.snapshot_ready.connect(self._deliver_snapshot)
         self.worker.calibration_frame_ready.connect(self._deliver_calibration_frame)
         self.worker.tuning_done.connect(self._tuning_done)
+        self.worker.profile_finished.connect(self._profile_finished)
         self.worker.message.connect(self._message)
         self.worker.command_done.connect(self._command_done)
         self.worker.finished.connect(self._finish_close)
@@ -415,6 +470,9 @@ class CameraWindow(QWidget):
         self._busy = False
         self._update_controls()
         if self._closing:
+            return
+        if self._profile_pending is not None:
+            self._advance_profile_operation()
             return
         if self._is_open and self._pending_tunes:
             self._tune_timer.start()
@@ -485,15 +543,18 @@ class CameraWindow(QWidget):
 
     @Slot(bool, bool)
     def _set_state(self, opened, live):
+        changed = opened != self._is_open
         self._is_open, self._is_live = opened, live
         if not opened:
             self._preview_image = QImage()
             self.preview.clear()
             self.preview.setText("Camera closed")
+        if changed:
+            self._refresh_profiles()
         self._update_controls()
 
     def _update_controls(self):
-        enabled = not self._busy and not self._closing
+        enabled = not self._busy and not self._closing and self._profile_pending is None
         self.device_combo.setEnabled(enabled and not self._is_open)
         self.refresh_button.setEnabled(enabled and not self._is_open)
         self.open_button.setEnabled(enabled and not self._is_open and bool(self._devices))
@@ -504,6 +565,105 @@ class CameraWindow(QWidget):
         if self.intrinsic_window is not None:
             self.intrinsic_window.update_capture_available(enabled and self._is_open)
         self.live_button.setText("Stop live view" if self._is_live else "Start live view")
+        self._update_profile_buttons()
+
+    def _profile_store(self):
+        from .camera_profiles import ProfileStore
+        return ProfileStore(self.camera_name.lower(), (self._opened_device or {}).get('sn', ''))
+
+    def _refresh_profiles(self, selected=None):
+        selected = selected or self.profile_combo.currentText()
+        self.profile_combo.clear()
+        if not self._is_open:
+            self.profile_info.setText('Open a camera to save/load profiles / 打开相机后保存或加载配置')
+            return
+        try:
+            store = self._profile_store()
+            names, errors = store.list_profiles()
+            self.profile_combo.addItems(names)
+            index = self.profile_combo.findText(selected)
+            if index >= 0:
+                self.profile_combo.setCurrentIndex(index)
+            text = 'Profiles / 配置目录: '+str(store.directory)
+            if errors:
+                text += '\nUnreadable profile(s) / 无法读取的配置:\n'+'\n'.join(errors)
+            self.profile_info.setText(text)
+            self.profile_info.setToolTip(text)
+        except Exception as exc:
+            self.profile_info.setText(str(exc))
+        self._update_profile_buttons()
+
+    def _update_profile_buttons(self, *_):
+        if not hasattr(self, 'profile_info'):
+            return
+        ready = self._is_open and not self._busy and not self._closing and self._profile_pending is None
+        ready = ready and bool((self._opened_device or {}).get('sn'))
+        selected = self.profile_combo.currentIndex() >= 0
+        self.profile_combo.setEnabled(ready)
+        self.profile_load_button.setEnabled(ready and selected)
+        self.profile_save_button.setEnabled(ready and selected)
+        self.profile_save_as_button.setEnabled(ready)
+
+    def _save_profile_as(self):
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle('Save camera profile / 保存相机配置')
+        dialog.setLabelText('Profile name / 配置名称')
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setTextEchoMode(QLineEdit.Normal)
+        dialog.setStyleSheet('QDialog, QLabel { background: #252d38; color: #edf1f7; }'
+                            'QLineEdit { background: #151d27; color: #edf1f7; padding: 6px; }'
+                            'QPushButton { background: #34485b; color: #edf1f7; padding: 6px; }')
+        if dialog.exec() == QInputDialog.Accepted:
+            self._start_profile_operation('profile_save', dialog.textValue(), overwrite=False)
+
+    def _save_profile(self):
+        self._start_profile_operation('profile_save', self.profile_combo.currentText(), overwrite=True)
+
+    def _load_profile(self):
+        self._start_profile_operation('profile_load', self.profile_combo.currentText())
+
+    def _start_profile_operation(self, command, name, *, overwrite=False):
+        if self._closing or self._busy or not self._is_open or self._profile_pending is not None:
+            return
+        try:
+            from .camera_profiles import profile_name
+            store = self._profile_store()
+            name = profile_name(name)
+            self._profile_pending = (command, dict(store.identity, name=name, overwrite=overwrite))
+            if command == 'profile_load':
+                # Load replaces pending edits. Any already-running write is
+                # allowed to finish first, then the profile wins.
+                self._pending_tunes.clear()
+            self._tune_timer.stop()
+            self._update_controls()
+            self.status.setText('Waiting for camera tuning before profile operation… / 等待相机参数写入后处理配置…')
+            self._advance_profile_operation()
+        except Exception as exc:
+            self._profile_pending = None
+            self._update_controls()
+            self._message(f'Camera profile failed / 配置操作失败: {exc}')
+
+    def _advance_profile_operation(self):
+        if self._profile_pending is None or self._closing or self._busy or self._tuning:
+            return
+        if not self._is_open:
+            self._profile_pending = None
+            self._update_controls()
+            self._message('Camera profile cancelled: camera closed / 配置操作取消：相机已关闭')
+            return
+        if self._pending_tunes:
+            self._flush_tuning()
+            return
+        command, value = self._profile_pending
+        self._profile_pending = None
+        self._submit(command, value)
+
+    def _profile_finished(self, result):
+        if self._closing:
+            return
+        self._refresh_profiles(result['name'])
+        self.profile_info.setText(f'{result["name"]}\n{result["path"]}')
+        self.profile_info.setToolTip(result['path'])
 
     @Slot(object)
     def _set_parameters(self, values):
@@ -594,6 +754,12 @@ class CameraWindow(QWidget):
                     control.set_value(node['value'])
         if result['error']:
             self._pending_tunes.clear()
+            if self._profile_pending is not None:
+                self._profile_pending = None
+                self._update_controls()
+                self._message('Profile operation cancelled: camera tuning failed / 配置操作取消：相机参数写入失败')
+        elif self._profile_pending is not None:
+            self._advance_profile_operation()
         elif self._pending_tunes:
             self._tune_timer.start()
 
@@ -652,6 +818,7 @@ class CameraWindow(QWidget):
     def closeEvent(self, event):
         self._tune_timer.stop()
         self._pending_tunes.clear()
+        self._profile_pending = None
         if self.intrinsic_window is not None:
             self.intrinsic_window.close()
             if self.intrinsic_window is not None:
