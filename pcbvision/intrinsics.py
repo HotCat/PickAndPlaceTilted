@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import copy
+import shutil
 import uuid
 
 import cv2
@@ -20,6 +22,7 @@ from launcher.config import atomic_json
 
 MIN_VIEWS = 10
 RECOMMENDED_VIEWS = 20
+DETECTOR_VERSION = 'opencv_sb_multiscale_v2'
 
 
 def utc_now():
@@ -49,20 +52,35 @@ def gray_image(image):
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
-def detect_corners(image, board_size):
-    """Detect cheaply at limited size, refine in full native image coordinates."""
+def _detect_observation(image, board_size):
+    """Preserve SB's subpixel estimates; do not refine them with cornerSubPix.
+
+    The sector-based detector already localizes corners below pixel resolution.
+    A subsequent small gradient window can pull those estimates away on soft or
+    asymmetric edges (the real 20-view regression went from .31 to 1.05 px).
+    Try native pixels first; very large projected cells can exceed SB's search
+    scale, so retry smaller images. Map their pixel *centers* back to native
+    coordinates, including OpenCV resize's half-pixel offset.
+    """
     gray = gray_image(image)
-    scale = min(1., 1600/max(gray.shape))
-    small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
-    found, corners = cv2.findChessboardCornersSB(small, tuple(board_size), cv2.CALIB_CB_NORMALIZE_IMAGE)
-    if not found:
-        raise ValueError('Full chessboard not detected. Keep all corners visible, focused and evenly lit. / 未检测到完整棋盘，请检查尺寸、清晰度及遮挡。')
-    # Use the actual resize factors (OpenCV rounds the resized dimensions).
-    corners[:, :, 0] *= gray.shape[1]/small.shape[1]
-    corners[:, :, 1] *= gray.shape[0]/small.shape[0]
-    corners = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1),
-                              (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 40, .001))
-    return corners.astype(np.float32)
+    scales = [1.]
+    if max(gray.shape) > 1600:
+        scales += sorted({.8, 1600/max(gray.shape)}-set(scales), reverse=True)
+    for scale in scales:
+        small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
+        found, corners = cv2.findChessboardCornersSB(small, tuple(board_size),
+                                                    cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_ACCURACY)
+        if found:
+            corners[:, :, 0] = (corners[:, :, 0]+.5)*(gray.shape[1]/small.shape[1])-.5
+            corners[:, :, 1] = (corners[:, :, 1]+.5)*(gray.shape[0]/small.shape[0])-.5
+            return corners.astype(np.float32), {'version': DETECTOR_VERSION,
+                'algorithm': 'findChessboardCornersSB', 'extra_cornerSubPix': False,
+                'working_size': [small.shape[1], small.shape[0]]}
+    raise ValueError('Full chessboard not detected. Keep all corners visible, focused and evenly lit. / 未检测到完整棋盘，请检查尺寸、清晰度及遮挡。')
+
+
+def detect_corners(image, board_size):
+    return _detect_observation(image, board_size)[0]
 
 
 def observation_metrics(image, corners, board_size):
@@ -102,13 +120,20 @@ def capture_identity(payload, lens_setup):
 
 def coverage(samples, image_size):
     if not samples:
-        return {'cells': [], 'image_hull_fraction': 0., 'center_span': [0., 0.]}
+        return {'cells': [], 'image_hull_fraction': 0., 'center_span': [0., 0.],
+                'corner_cells': [], 'corner_counts': [0]*9, 'corner_span': [0., 0.], 'corner_bounds': [[0., 0.], [0., 0.]]}
     w, h = image_size
     corners = np.concatenate([np.asarray(s['corners'], np.float32).reshape(-1, 2) for s in samples])
     centers = np.array([s['metrics']['center'] for s in samples])
     cells = sorted({min(2, int(y*3))*3+min(2, int(x*3)) for x, y in centers})
+    normalized = corners/[w, h]
+    bins = np.clip((normalized*3).astype(int), 0, 2)
+    counts = np.bincount(bins[:, 1]*3+bins[:, 0], minlength=9)
     return {'cells': cells, 'image_hull_fraction': float(cv2.contourArea(cv2.convexHull(corners))/(w*h)),
-            'center_span': np.ptp(centers, axis=0).tolist()}
+            'center_span': np.ptp(centers, axis=0).tolist(),
+            'corner_cells': np.flatnonzero(counts).tolist(), 'corner_counts': counts.tolist(),
+            'corner_span': np.ptp(normalized, axis=0).tolist(),
+            'corner_bounds': [normalized.min(axis=0).tolist(), normalized.max(axis=0).tolist()]}
 
 
 class IntrinsicSession:
@@ -166,7 +191,10 @@ class IntrinsicSession:
             raise ValueError('Camera, resolution/ROI/binning, mirror or lens setup changed. Start a new session. / 相机采集模式或镜头设置已改变，请新建采集。')
         if len(self.samples) >= 100:
             raise ValueError('100-view limit; start a new session')
-        points = detect_corners(frame, self.board_size) if corners is None else np.asarray(corners, np.float32).reshape(-1, 1, 2)
+        if corners is None:
+            points, detector = _detect_observation(frame, self.board_size)
+        else:
+            points, detector = np.asarray(corners, np.float32).reshape(-1, 1, 2), {'version': 'provided_coordinates'}
         if points.shape != (np.prod(self.board_size), 1, 2):
             raise ValueError('Wrong corner count')
         metrics = observation_metrics(frame, points, self.board_size)
@@ -184,7 +212,8 @@ class IntrinsicSession:
         if not cv2.imwrite(str(self.directory/filename), frame):
             raise OSError('Could not save native calibration image')
         sample = {'image': filename, 'captured_at': utc_now(), 'corners': flat.tolist(),
-                  'metrics': metrics, 'enabled': True, 'camera_settings': payload['metadata']['parameters']}
+                  'metrics': metrics, 'enabled': True, 'camera_settings': payload['metadata']['parameters'],
+                  'detector': detector}
         old_identity = self.data['identity']
         self.data['identity'] = identity
         self.samples.append(sample)
@@ -201,6 +230,37 @@ class IntrinsicSession:
             raise
         (self.directory/'intrinsics.json').unlink(missing_ok=True)
         return sample, points
+
+    def reprocess(self, directory, progress=None):
+        """Create an independent corrected dataset, keeping source data untouched.
+
+        Preserve all original images, settings, timestamps and include/exclude
+        choices. No outlier removal or parameter/model tuning occurs here. Do
+        not leave a half-reprocessed session on detection or disk failure.
+        """
+        target = IntrinsicSession(directory, self.board_size, self.data['square_size_mm'])
+        target.directory.mkdir(parents=True, exist_ok=False)
+        try:
+            target.data = copy.deepcopy(self.data)
+            previous = target.data.pop('result', {})
+            target.data['created_at'] = utc_now()
+            target.data['reprocessed_from'] = {'directory': str(self.directory), 'at': utc_now(),
+                                               'rms_px': previous.get('rms_px')}
+            for index, sample in enumerate(target.samples):
+                if progress:
+                    progress(f'Re-detecting saved image {index+1}/{len(target.samples)} / 正在重新检测已存图像')
+                source = self.directory/sample['image']
+                image = cv2.imread(str(source), cv2.IMREAD_UNCHANGED)
+                points, detector = _detect_observation(image, self.board_size)
+                sample['corners'] = points.reshape(-1, 2).tolist()
+                sample['detector'] = detector
+                sample['metrics'] = observation_metrics(image, points, self.board_size)
+                shutil.copy2(source, target.directory/sample['image'])
+            target.save()
+        except Exception:
+            shutil.rmtree(target.directory)
+            raise
+        return target
 
     def set_enabled(self, index, enabled):
         previous = self.samples[index].get('enabled', True)
@@ -259,10 +319,20 @@ class IntrinsicSession:
             warnings.append('Limited second-axis tilt; add views tilted about the other board axis / 第二方向倾角不足')
         if len(samples) < RECOMMENDED_VIEWS:
             warnings.append('Fewer than 20 views / 少于20张')
-        if len(report['cells']) < 5 or min(report['center_span']) < .3 or report['image_hull_fraction'] < .55:
-            warnings.append('Limited image coverage: add center, edge and corner views / 需补充图像边缘和角落视图')
+        # Coverage belongs to observed corners, not board centroids. A large
+        # board can cover every image region with its center in one grid cell.
+        if len(report['corner_cells']) < 7 or min(report['corner_span']) < .7 or report['image_hull_fraction'] < .55:
+            warnings.append(f'Corner coverage advisory: {len(report["corner_cells"])}/9 cells, '
+                            f'hull {report["image_hull_fraction"]*100:.1f}%, '
+                            f'X/Y span {report["corner_span"][0]*100:.1f}/{report["corner_span"][1]*100:.1f}%. '
+                            'Review spatial coverage; this is a heuristic, not a failed calibration / 角点空间覆盖提示，仅为经验指标，并非标定失败')
         if rms > .5 or float(per_view.max()) > 1.:
-            warnings.append('Large pixel residuals: inspect high-error views / 重投影误差偏大，请检查高误差样本')
+            warnings.append(f'Reprojection residual advisory: RMS {rms:.3f} px, max view {float(per_view.max()):.3f} px. '
+                            'Review corner detection, imaging, target and model / 请检查角点检测、成像、标定板及模型；不能仅据此判定采集问题')
+        legacy = sum('detector' not in sample for sample in samples)
+        if legacy:
+            warnings.append(f'{legacy} views use legacy corner refinement. Reprocess saved images before using this result / '
+                            f'{legacy}张图使用旧版角点细化，请先重新检测已保存图像')
         if not (0 < k[0,2] < size[0] and 0 < k[1,2] < size[1]) or not .1 < k[0,0]/size[0] < 10 or not .1 < k[1,1]/size[1] < 10:
             warnings.append('Unusual focal length/principal point; check target size and view diversity / 焦距或主点异常')
         relative_std = np.asarray(std_k).ravel()[:2]/[k[0,0], k[1,1]]
@@ -276,6 +346,7 @@ class IntrinsicSession:
                   'K': k.tolist(), 'D': d.ravel().tolist(), 'rms_px': float(rms),
                   'intrinsic_std': std_k.ravel().tolist(), 'normal_spread_deg': angle,
                   'coverage': report, 'warnings': warnings,
+                  'detector_versions': sorted({s.get('detector', {}).get('version', 'legacy_subpix5_v1') for s in samples}),
                   'status': 'needs_review' if warnings else 'fit_complete_requires_independent_validation',
                   'views': [{'image': s['image'], 'rms_px': float(error),
                              'board_to_camera_rvec': r.ravel().tolist(), 'board_to_camera_t_mm': t.ravel().tolist()}

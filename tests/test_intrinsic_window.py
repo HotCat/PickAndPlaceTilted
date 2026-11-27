@@ -101,6 +101,15 @@ def test_native_capture_background_detection_resume_and_duplicate_rejection(tmp_
         wait_for(lambda: child.job is None and not child._waiting)
         assert len(child.session.samples) == 1
         assert 'duplicates' in child.status.text()
+        source = child.session
+        original = source.manifest.read_bytes()
+        child.reprocess_button.click()
+        wait_for(lambda: child.job is None and child.session.directory != source.directory)
+        assert source.manifest.read_bytes() == original
+        assert child.session.data['reprocessed_from']['directory'] == str(source.directory)
+        assert len(child.session.samples) == 1
+        assert not child.locked.isChecked()
+        assert 'Reprocessed copy saved' in child.status.text()
         child.close()
         assert window.intrinsic_window is None
         window.open_intrinsics()

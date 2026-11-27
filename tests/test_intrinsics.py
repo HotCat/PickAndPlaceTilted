@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from pcbvision.intrinsics import (IntrinsicSession, capture_identity, detect_corners,
-                                  object_grid, observation_metrics)
+                                  coverage, object_grid, observation_metrics, DETECTOR_VERSION)
 
 
 def payload(frame=None):
@@ -141,3 +141,85 @@ def test_rejects_missing_camera_serial(tmp_path):
     data['metadata']['serial'] = ''
     with pytest.raises(ValueError, match='serial'):
         capture_identity(data, 'fixed')
+
+
+def test_sb_subpixel_coordinates_survive_fallback_resize_without_gradient_refinement(monkeypatch):
+    # Force the native attempt to fail, then return known fractional SB corners
+    # at the next scale. No cornerSubPix may modify these estimates afterward.
+    image = np.zeros((1501, 2001), np.uint8)
+    points = np.mgrid[:11, :8].T.reshape(-1, 1, 2).astype(np.float32)*30+[100.25, 90.75]
+    calls = []
+    def sb(frame, board, flags):
+        calls.append(frame.shape)
+        return (False, None) if len(calls) == 1 else (True, points.astype(np.float32).copy())
+    monkeypatch.setattr(cv2, 'findChessboardCornersSB', sb)
+    def forbidden(*_, **__):
+        raise AssertionError('SB is already subpixel; extra cornerSubPix regresses real-camera accuracy')
+    monkeypatch.setattr(cv2, 'cornerSubPix', forbidden)
+    result = detect_corners(image, (11, 8))
+    expected = (points+.5)*[image.shape[1]/calls[1][1], image.shape[0]/calls[1][0]]-.5
+    np.testing.assert_allclose(result, expected, atol=.0001)
+
+
+def test_large_board_coverage_uses_corner_regions_not_center_locations(tmp_path):
+    session = IntrinsicSession(tmp_path)
+    obj = object_grid((11, 8), 3.)
+    k = np.array([[1000., 0, 640], [0, 1000, 480], [0, 0, 1.]])
+    rng = np.random.default_rng(73)
+    for _ in range(100):
+        rvec = rng.uniform([-.22, -.22, -.08], [.22, .22, .08])
+        rot = cv2.Rodrigues(rvec)[0]
+        trans = np.array([0., 0., 28.])-rot@obj.mean(axis=0)
+        points = cv2.projectPoints(obj, rvec, trans, k, np.zeros(5))[0]
+        if np.any(points.reshape(-1, 2).min(axis=0) < 10) or np.any(points.reshape(-1, 2).max(axis=0) > [1270, 950]):
+            continue
+        session.add(payload(), 'fixed', points)
+        if len(session.samples) == 20:
+            break
+    assert len(session.samples) == 20
+    report = coverage(session.active, (1280, 960))
+    assert len(report['cells']) == 1  # all board centroids stay in center
+    assert len(report['corner_cells']) == 9
+    assert report['image_hull_fraction'] > .7
+    result = session.solve()
+    assert not any('coverage' in warning for warning in result['warnings'])
+
+
+def test_reprocess_preserves_original_images_manifest_and_exclusions(tmp_path):
+    image = np.full((1050, 1400), 210, np.uint8)
+    for row in range(9):
+        for col in range(12):
+            image[140+row*75:140+(row+1)*75, 150+col*75:150+(col+1)*75] = 0 if (row+col)%2 == 0 else 255
+    source = IntrinsicSession(tmp_path/'source')
+    source.add(payload(image), 'fixed')
+    source.set_enabled(0, False)
+    source.data['samples'][0].pop('detector')
+    source.data['result'] = {'rms_px': 1.05}
+    source.save()
+    before = source.manifest.read_bytes()
+    image_before = (source.directory/source.samples[0]['image']).read_bytes()
+    messages = []
+    target = source.reprocess(tmp_path/'corrected', messages.append)
+    assert messages
+    assert source.manifest.read_bytes() == before
+    assert 'result' in source.data and 'result' not in target.data
+    assert target.data['reprocessed_from']['rms_px'] == 1.05
+    assert target.samples[0]['enabled'] is False
+    assert target.samples[0]['detector']['version'] == DETECTOR_VERSION
+    assert (target.directory/target.samples[0]['image']).read_bytes() == image_before
+    assert IntrinsicSession.load(target.directory).samples[0]['detector']['extra_cornerSubPix'] is False
+    with pytest.raises(FileExistsError):
+        source.reprocess(tmp_path/'corrected')
+
+
+def test_reprocess_detection_failure_leaves_original_and_removes_partial_copy(tmp_path, monkeypatch):
+    source = IntrinsicSession(tmp_path/'source')
+    source.add(payload(), 'fixed', next(observations())[2])
+    original = source.manifest.read_bytes()
+    def fail(*_):
+        raise ValueError('No chessboard')
+    monkeypatch.setattr('pcbvision.intrinsics._detect_observation', fail)
+    with pytest.raises(ValueError, match='No chessboard'):
+        source.reprocess(tmp_path/'corrected')
+    assert source.manifest.read_bytes() == original
+    assert not (tmp_path/'corrected').exists()

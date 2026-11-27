@@ -21,10 +21,14 @@ rectification tool's independent 5 mm default is not used here.
    glare, motion blur and bending the target. Exposure/gain can be adjusted to
    keep images usable; the target must be stationary during each capture.
 3. Click **Capture view / 采集当前视图**. A fresh full-resolution frame is acquired
-   on the camera worker, then detected/refined on another worker. The selected
+   on the camera worker, then detected on another worker. The selected
    sample displays all 88 colored corners. GUI preview resizing/crosshairs never
    enter the calibration measurements. Raw images and refined corners are saved
    immediately; closing the program does not lose accepted samples.
+   OpenCV's sector-based (SB) detector already provides subpixel corners. Native
+   detection is attempted first; oversized projected squares may need a smaller
+   detection image. The working size is recorded and pixel centers are mapped
+   back to native coordinates. There is **no extra `cornerSubPix` pass**.
    Enable **Live framing / 实时取景** while arranging the next view (start live
    view in the camera window first). Capture switches back to the saved native
    image/corner overlay. Live framing is display-only and does not add samples.
@@ -32,8 +36,8 @@ rectification tool's independent 5 mm default is not used here.
    and corners, at several distances, and tilted roughly 15–35° about **both**
    board axes where detection/focus permit. Include some larger board images to
    constrain distortion. Keep focus fixed. In-plane rotation alone is inadequate.
-   The current board occupies only about 5% of the image, so include closer/larger
-   views and more image positions rather than repeating this one view.
+   The first verification image occupied about 5% of the image. That describes
+   only that initial view, not the coverage of a subsequently collected dataset.
 5. With the robot stationary, move the board by hand if practical. This window
    sends no robot commands. Moving a wrist-mounted camera through varied poses
    using separate teaching controls is also possible, but automatic robot motion
@@ -64,9 +68,16 @@ D = [k1, k2, p1, p2, k3]
 ```
 
 The window reports global RMS and each view's RMS in **native image pixels**,
-focal lengths/principal point, center-position coverage, corner hull coverage,
+focal lengths/principal point, observed-corner grid coverage, corner hull coverage,
 and fitted board-normal diversity. The saved result also contains intrinsic
 parameter standard deviations and per-view board-to-camera extrinsics.
+
+Coverage uses **corner observations**, not chessboard centers. The nine grid
+regions, X/Y corner spans and convex hull area are reported separately. Board
+center statistics remain in JSON for information, but do not drive coverage
+warnings: a large board can cover the edges while its center remains central.
+Coverage and pixel-residual warning thresholds are advisory heuristics; neither
+identifies the cause of an error or proves that image collection was faulty.
 
 Inspect high-error samples in the list. Uncheck an unusable sample to exclude
 it and refit. Images remain on disk; there is no silent removal of outliers.
@@ -111,6 +122,41 @@ or change robot calibration. Those later operations need hand–eye calibration
 unmarked chessboard may also have a 180° coordinate-index ambiguity relevant to
 future workpiece origins/X directions; this does not prevent intrinsic fitting.
 Pixel residuals must not be reported as TCP millimetre positioning accuracy.
+
+## Reprocessing sessions captured by the first implementation
+
+The first version ran `cornerSubPix` with a 5 × 5 half-window after SB detection.
+That additional gradient refinement can degrade SB's estimates on soft or
+asymmetric edges. On the workstation's actual 20 enabled views, this step raised
+the same-data fit from approximately **0.314 px** to **1.050 px**. Corrected native
+SB detection with scale fallback gives **0.311 px**, maximum per-view **0.582 px**,
+using every one of the same 20 views. No new images, discarded outliers or more
+flexible distortion model were used. This is a software measurement issue.
+
+That dataset also exposed the centroid-coverage heuristic's false positive:
+only three board-center cells were occupied, but observed corners occupied all
+nine regions and spanned about 93.3% of width and 90.2% of height, with a 76.8%
+convex hull. The corrected coverage check no longer issues that warning.
+
+For any old session, click **Reprocess saved images / 重新检测已保存图像**.
+This creates an independent session directory, copies raw images unchanged,
+re-detects every image, preserves include/exclude choices and automatically fits
+when at least ten views are enabled. It does not mutate the source session or
+silently drop failed images. Detection failure removes the incomplete copy;
+fit failure retains the fully reprocessed dataset for review. The resulting
+session is restored next time. Old samples are marked in the UI and old-corner
+fits carry an explicit warning until reprocessed.
+
+The corrected camera matrix differs from the old fit (focal length approximately
+3094 px instead of 2966 px). Use the corrected result for subsequent work, while
+still validating it independently: lower training RMS alone is not a physical
+accuracy guarantee. Camera/hand–eye/robot settings were not changed.
+
+旧版在 SB 检测后额外调用小窗口 `cornerSubPix`，在这组图像上反而使角点偏移。
+同样20张有效图像、不增加图像、不剔除更多样本，修正后 RMS 从1.050降到0.311像素。
+旧版还误把棋盘中心位置覆盖当成角点覆盖，导致错误提示采集范围不足。
+点击 **重新检测已保存图像** 会新建独立副本并重新计算，保留原始图像、原始采集和
+所有勾选状态。界面会恢复修正后的副本；后续使用新结果，仍需独立验证实际精度。
 
 ## 简体中文步骤
 

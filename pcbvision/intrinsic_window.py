@@ -26,6 +26,7 @@ from .intrinsics import IntrinsicSession, MIN_VIEWS, RECOMMENDED_VIEWS, calibrat
 class CalibrationJob(QThread):
     succeeded = Signal(object)
     failed = Signal(str)
+    progress = Signal(str)
 
     def __init__(self, function, parent):
         super().__init__(parent)
@@ -133,6 +134,10 @@ class IntrinsicWindow(QDialog):
         self.fit = QPushButton('Fit intrinsics / 计算内参')
         self.fit.clicked.connect(self.fit_intrinsics)
         side.addWidget(self.fit)
+        self.reprocess_button = QPushButton('Reprocess saved images / 重新检测已保存图像')
+        self.reprocess_button.setToolTip('Create a new session with corrected corner detection and refit. Original session/images remain unchanged. / 新建副本重新检测并计算，保留原始采集。')
+        self.reprocess_button.clicked.connect(self.reprocess_images)
+        side.addWidget(self.reprocess_button)
         self.result = QLabel('No fitted result / 尚未计算')
         self.result.setWordWrap(True)
         self.result.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -186,6 +191,7 @@ class IntrinsicWindow(QDialog):
             widget.setEnabled(not busy)
         self.capture.setEnabled(not busy and self._capture_available and self.locked.isChecked() and not self._close_pending)
         self.fit.setEnabled(not busy and len(self.session.active) >= MIN_VIEWS)
+        self.reprocess_button.setEnabled(not busy and bool(self.session.samples))
         self.export_button.setEnabled(not busy and 'result' in self.session.data)
         self.undistort.setEnabled(not busy and 'result' in self.session.data)
         fixed = bool(self.session.samples) or busy
@@ -221,7 +227,7 @@ class IntrinsicWindow(QDialog):
         lens = self.lens.text()
         self.live_framing.setChecked(False)
         self.start_job(lambda: self.session.add(payload, lens), self.sample_added,
-                       'Detecting/refining all corners at native resolution… / 正在检测并细化角点…')
+                       'Detecting SB subpixel corners… / 正在检测SB亚像素角点…')
 
     def start_job(self, function, success, message):
         if self.job is not None:
@@ -231,6 +237,7 @@ class IntrinsicWindow(QDialog):
         self.job = job
         job.succeeded.connect(success)
         job.failed.connect(self.job_failed)
+        job.progress.connect(self.status.setText)
         job.finished.connect(self.job_finished)
         self.update_controls()
         job.start()
@@ -275,9 +282,13 @@ class IntrinsicWindow(QDialog):
         active = self.session.active
         size = self.session.data['identity']['image_size'] if self.session.data['identity'] else (1, 1)
         report = coverage(active, size)
-        cells = ' / '.join(''.join('■' if row*3+col in report['cells'] else '□' for col in range(3)) for row in range(3))
+        cells = ' / '.join(''.join('■' if row*3+col in report['corner_cells'] else '□' for col in range(3)) for row in range(3))
+        legacy = sum('detector' not in sample for sample in active)
+        legacy_text = f'\n{legacy} legacy views: use Reprocess saved images / 旧版角点请点击重新检测' if legacy else ''
         self.summary.setText(f'{len(active)} active / 有效视图 · minimum {MIN_VIEWS}, recommended {RECOMMENDED_VIEWS}–30\n'
-                             f'Center coverage / 中心位置覆盖: {cells}\nCorner hull / 角点覆盖 {report["image_hull_fraction"]*100:.1f}%')
+                             f'Corner regions / 角点分区: {cells}\nCorner hull / 角点覆盖 {report["image_hull_fraction"]*100:.1f}%\n'
+                             f'X/Y span / 跨度 {report["corner_span"][0]*100:.1f}% / {report["corner_span"][1]*100:.1f}%'
+                             f'{legacy_text}')
         self.path_label.setText('Session / 采集目录: '+str(self.session.directory))
         self.render_result()
         self.update_controls()
@@ -295,6 +306,36 @@ class IntrinsicWindow(QDialog):
     def fit_intrinsics(self):
         self.start_job(self.session.solve, self.fit_done,
                        'Fitting camera intrinsics (no robot motion)… / 正在计算内参，不会移动机器人…')
+
+    def reprocess_images(self):
+        source, destination = self.session, self.new_directory()
+
+        def process():
+            target = source.reprocess(destination, self.job.progress.emit)
+            fit_error = None
+            if len(target.active) >= MIN_VIEWS:
+                self.job.progress.emit('Refitting corrected corners… / 正在用重新检测的角点计算内参…')
+                try:
+                    target.solve()
+                except Exception as exc:
+                    fit_error = str(exc)
+            return target, fit_error
+
+        def complete(value):
+            self.session, fit_error = value
+            self.settings.setValue('last_session', str(self.session.directory))
+            self.apply_session_settings()
+            self.render_samples()
+            message = f'Reprocessed copy saved / 重新检测副本已保存: {self.session.directory}. Original / 原始: {source.directory}'
+            if 'result' in self.session.data:
+                self.fit_done(None)
+                message += f'. RMS {self.session.data["result"]["rms_px"]:.4f} px'
+            if fit_error:
+                message += '. Fit needs review / 拟合需检查: '+fit_error
+            self.status.setText(message)
+            self.camera_window._message(message)
+
+        self.start_job(process, complete, 'Reprocessing saved images into a separate session… / 正在新建副本重新检测…')
 
     def fit_done(self, _):
         self.render_samples()
@@ -336,7 +377,10 @@ class IntrinsicWindow(QDialog):
         else:
             corners = np.asarray(sample['corners'], np.float32).reshape(-1, 1, 2)
             cv2.drawChessboardCorners(image, self.session.board_size, corners, True)
-            label = f'{len(corners)} refined inner corners / 已细化内角点'
+            label = f'{len(corners)} subpixel inner corners / 亚像素内角点'
+            working = sample.get('detector', {}).get('working_size')
+            if working:
+                label += f' · SB image {working[0]} × {working[1]}'
         h, w = image.shape[:2]
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         self._image = QImage(image.data, w, h, image.strides[0], QImage.Format_RGB888).copy()
